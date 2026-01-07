@@ -8,6 +8,7 @@ from .common import (
     _choose_block_d,
     _compute_output_hw,
     _get_autotune_config,
+    _get_autotune_config_bwd,
     _next_power_of_2,
     _prune_configs_dcnv4,
 )
@@ -128,7 +129,7 @@ def _dcnv4_fwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    # Use mask comparison to select column, compatible with Triton 3.5+
+                    # Triton does not support dynamic tensor indexing in all versions.
                     mask_now = (mask_idx == point_idx)[None, :]
                     attn = tl.sum(mask_vals * mask_now, axis=1)
                 else:
@@ -208,11 +209,10 @@ def _dcnv4_fwd_kernel(
                     tl.float32,
                 )
 
-                interp = (
-                    v1 * w1[:, None]
-                    + v2 * w2[:, None]
-                    + v3 * w3[:, None]
-                    + v4 * w4[:, None]
+                interp = tl.fma(
+                    v1,
+                    w1[:, None],
+                    tl.fma(v2, w2[:, None], tl.fma(v3, w3[:, None], v4 * w4[:, None])),
                 )
                 acc += attn[:, None] * interp
 
@@ -232,7 +232,7 @@ def _dcnv4_fwd_kernel(
 
 
 @triton.autotune(
-    configs=_get_autotune_config(),
+    configs=_get_autotune_config_bwd(),
     key=["G", "D"],
     reset_to_zero=["grad_input_ptr"],
     prune_configs_by={"early_config_prune": _prune_configs_dcnv4},
@@ -373,7 +373,6 @@ def _dcnv4_bwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    # Use mask comparison to select column, compatible with Triton 3.5+
                     mask_now = (mask_idx == point_idx)[None, :]
                     attn = tl.sum(mask_vals * mask_now, axis=1)
                 else:
@@ -449,11 +448,10 @@ def _dcnv4_bwd_kernel(
                     tl.float32,
                 )
 
-                interp = (
-                    v1 * w1[:, None]
-                    + v2 * w2[:, None]
-                    + v3 * w3[:, None]
-                    + v4 * w4[:, None]
+                interp = tl.fma(
+                    v1,
+                    w1[:, None],
+                    tl.fma(v2, w2[:, None], tl.fma(v3, w3[:, None], v4 * w4[:, None])),
                 )
 
                 # grad_attn_val for current k [BLOCK_Q]

@@ -7,6 +7,7 @@ import triton.language as tl
 from .common import (
     _choose_block_d,
     _get_autotune_config,
+    _get_autotune_config_bwd,
     _next_power_of_2,
     _prune_configs_flash,
 )
@@ -164,11 +165,10 @@ def _flash_deform_fwd_kernel(
                 tl.float32,
             )
 
-            interp = (
-                v1 * w1[:, None]
-                + v2 * w2[:, None]
-                + v3 * w3[:, None]
-                + v4 * w4[:, None]
+            interp = tl.fma(
+                v1,
+                w1[:, None],
+                tl.fma(v2, w2[:, None], tl.fma(v3, w3[:, None], v4 * w4[:, None])),
             )
             acc += attn[:, None] * interp
 
@@ -184,7 +184,7 @@ def _flash_deform_fwd_kernel(
 
 
 @triton.autotune(
-    configs=_get_autotune_config(),
+    configs=_get_autotune_config_bwd(),
     key=["G", "D"],
     reset_to_zero=["grad_input_ptr"],
     prune_configs_by={"early_config_prune": _prune_configs_flash},
@@ -360,11 +360,10 @@ def _flash_deform_bwd_kernel(
                 tl.float32,
             )
 
-            interp = (
-                v1 * w1[:, None]
-                + v2 * w2[:, None]
-                + v3 * w3[:, None]
-                + v4 * w4[:, None]
+            interp = tl.fma(
+                v1,
+                w1[:, None],
+                tl.fma(v2, w2[:, None], tl.fma(v3, w3[:, None], v4 * w4[:, None])),
             )
             grad_attn_val = tl.sum(go * interp, axis=1)
 

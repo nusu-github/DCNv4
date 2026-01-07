@@ -121,6 +121,41 @@ def _get_autotune_config():
                         num_stages=num_stages,
                     ),
                 )
+                if block_q >= 64:
+                    configs.append(
+                        triton.Config(
+                            {"BLOCK_Q": block_q},
+                            num_warps=num_warps,
+                            num_stages=num_stages,
+                            maxnreg=256,
+                        ),
+                    )
+    return configs
+
+
+def _get_autotune_config_bwd():
+    """Generate Triton autotuning configurations tuned for backward kernels."""
+    configs = []
+    for block_q in [16, 32, 64, 128]:
+        for num_warps in [2, 4, 8]:
+            for num_stages in [1, 2]:
+                configs.append(
+                    triton.Config(
+                        {"BLOCK_Q": block_q},
+                        num_warps=num_warps,
+                        num_stages=num_stages,
+                    ),
+                )
+                if block_q >= 64:
+                    for maxnreg in (128, 192):
+                        configs.append(
+                            triton.Config(
+                                {"BLOCK_Q": block_q},
+                                num_warps=num_warps,
+                                num_stages=num_stages,
+                                maxnreg=maxnreg,
+                            ),
+                        )
     return configs
 
 
