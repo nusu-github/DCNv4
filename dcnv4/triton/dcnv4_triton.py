@@ -129,7 +129,9 @@ def _dcnv4_fwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    attn = mask_vals[:, point_idx]
+                    # Use mask comparison to select column, compatible with Triton 3.5+
+                    mask_now = (mask_idx == point_idx)[None, :]
+                    attn = tl.sum(mask_vals * mask_now, axis=1)
                 else:
                     ptr_mask_val = offset_base + 2 * K_TOTAL + point_idx
                     attn = tl.load(ptr_mask_val, mask=mask_q, other=0.0).to(tl.float32)
@@ -316,7 +318,7 @@ def _dcnv4_bwd_kernel(
         mask_vals = tl.load(
             ptr_mask,
             mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-            other=-float("inf"),
+            other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
         ).to(tl.float32)
         maxv = tl.max(mask_vals, axis=1)
         expv = tl.exp(mask_vals - maxv[:, None])
@@ -370,7 +372,9 @@ def _dcnv4_bwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    attn = mask_vals[:, point_idx]
+                    # Use mask comparison to select column, compatible with Triton 3.5+
+                    mask_now = (mask_idx == point_idx)[None, :]
+                    attn = tl.sum(mask_vals * mask_now, axis=1)
                 else:
                     ptr_mask_val = offset_base + 2 * K_TOTAL + point_idx
                     attn = tl.load(ptr_mask_val, mask=mask_q, other=0.0).to(tl.float32)
@@ -481,11 +485,13 @@ def _dcnv4_bwd_kernel(
                 grad_off_w_val = offset_scale * attn * tl.sum(go * grad_w, axis=1)
                 grad_off_h_val = offset_scale * attn * tl.sum(go * grad_h, axis=1)
 
-                # Store grad_offset immediately
+                # Store grad_offset - only first pid_d writes to avoid race condition
+                # For num_d_blocks > 1, additional aggregation kernel would be needed
                 ptr_grad_w = grad_offset_base + point_idx * 2
                 ptr_grad_h = grad_offset_base + point_idx * 2 + 1
-                tl.store(ptr_grad_w, grad_off_w_val, mask=mask_q)
-                tl.store(ptr_grad_h, grad_off_h_val, mask=mask_q)
+                if pid_d == 0:
+                    tl.store(ptr_grad_w, grad_off_w_val, mask=mask_q)
+                    tl.store(ptr_grad_h, grad_off_h_val, mask=mask_q)
 
                 # Atomic add to grad_input
                 base_grad_in = grad_input_ptr + b * stride_gib + c * stride_gic

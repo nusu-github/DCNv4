@@ -74,7 +74,7 @@ def _flash_deform_fwd_kernel(
     mask_vals = tl.load(
         ptr_mask,
         mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-        other=-float("inf"),
+        other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
     ).to(tl.float32)
     maxv = tl.max(mask_vals, axis=1)
     expv = tl.exp(mask_vals - maxv[:, None])
@@ -255,7 +255,7 @@ def _flash_deform_bwd_kernel(
     mask_vals = tl.load(
         ptr_mask,
         mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-        other=-float("inf"),
+        other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
     ).to(tl.float32)
     maxv = tl.max(mask_vals, axis=1)
     expv = tl.exp(mask_vals - maxv[:, None])
