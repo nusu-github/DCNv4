@@ -4,12 +4,18 @@ import torch
 import triton
 import triton.language as tl
 
-from .common import _get_autotune_config, _next_power_of_2
+from .common import (
+    _choose_block_d,
+    _get_autotune_config,
+    _next_power_of_2,
+    _prune_configs_flash,
+)
 
 
 @triton.autotune(
     configs=_get_autotune_config(),
     key=["G", "D"],
+    prune_configs_by={"early_config_prune": _prune_configs_flash},
 )
 @triton.jit
 def _flash_deform_fwd_kernel(
@@ -40,19 +46,26 @@ def _flash_deform_fwd_kernel(
     BLOCK_K: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
-    g = tl.program_id(1)
+    pid_gd = tl.program_id(1)
     b = tl.program_id(2)
 
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
     offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
     mask_q = offs_q < Q
 
-    d = tl.arange(0, BLOCK_D)
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
     mask_c = d < D
     c = g * D + d
 
     mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
     offset_base = offset_ptr + b * stride_ob + offs_q * stride_oq + g * stride_og
 
     # Load all masks (Softmax is always true for flash deform?)
@@ -175,6 +188,7 @@ def _flash_deform_fwd_kernel(
     configs=_get_autotune_config(),
     key=["G", "D"],
     reset_to_zero=["grad_input_ptr"],
+    prune_configs_by={"early_config_prune": _prune_configs_flash},
 )
 @triton.jit
 def _flash_deform_bwd_kernel(
@@ -215,19 +229,26 @@ def _flash_deform_bwd_kernel(
     BLOCK_K: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
-    g = tl.program_id(1)
+    pid_gd = tl.program_id(1)
     b = tl.program_id(2)
 
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
     offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
     mask_q = offs_q < Q
 
-    d = tl.arange(0, BLOCK_D)
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
     mask_c = d < D
     c = g * D + d
 
     mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
     offset_base = offset_ptr + b * stride_ob + offs_q * stride_oq + g * stride_og
 
     ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
@@ -433,11 +454,16 @@ def flash_deform_attn_forward(
 
     output = torch.zeros((B, Q, G * D), device=value.device, dtype=torch.float32)
 
-    BLOCK_D = _next_power_of_2(D)
+    BLOCK_D = _choose_block_d(D)
+    num_d_blocks = triton.cdiv(D, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
 
     def grid(META):
-        return (triton.cdiv(Q, META["BLOCK_Q"]), G, B)
+        return (
+            triton.cdiv(Q, META["BLOCK_Q"]),
+            G * num_d_blocks,
+            B,
+        )
 
     _flash_deform_fwd_kernel[grid](
         value,
@@ -466,6 +492,7 @@ def flash_deform_attn_forward(
         K_TOTAL=k_total,
         BLOCK_K=BLOCK_K,
         BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
     )
 
     return output.to(dtype=value.dtype)
@@ -493,11 +520,16 @@ def flash_deform_attn_backward(
     grad_input = torch.zeros_like(value, dtype=torch.float32)
     grad_offset = torch.zeros_like(sampling_loc_attn, dtype=torch.float32)
 
-    BLOCK_D = _next_power_of_2(D)
+    BLOCK_D = _choose_block_d(D)
+    num_d_blocks = triton.cdiv(D, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
 
     def grid(META):
-        return (triton.cdiv(Q, META["BLOCK_Q"]), G, B)
+        return (
+            triton.cdiv(Q, META["BLOCK_Q"]),
+            G * num_d_blocks,
+            B,
+        )
 
     _flash_deform_bwd_kernel[grid](
         value,
@@ -536,6 +568,7 @@ def flash_deform_attn_backward(
         K_TOTAL=k_total,
         BLOCK_K=BLOCK_K,
         BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
     )
 
     if value.dtype in (torch.float16, torch.bfloat16):

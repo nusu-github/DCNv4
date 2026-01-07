@@ -4,12 +4,19 @@ import torch
 import triton
 import triton.language as tl
 
-from .common import _compute_output_hw, _get_autotune_config, _next_power_of_2
+from .common import (
+    _choose_block_d,
+    _compute_output_hw,
+    _get_autotune_config,
+    _next_power_of_2,
+    _prune_configs_dcnv4,
+)
 
 
 @triton.autotune(
     configs=_get_autotune_config(),
     key=["G", "D"],
+    prune_configs_by={"early_config_prune": _prune_configs_dcnv4},
 )
 @triton.jit
 def _dcnv4_fwd_kernel(
@@ -49,18 +56,24 @@ def _dcnv4_fwd_kernel(
     SOFTMAX: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
-    g = tl.program_id(1)
+    pid_gd = tl.program_id(1)
     b = tl.program_id(2)
 
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
     offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
     mask_q = offs_q < (H_out * W_out)
 
     h_out = offs_q // W_out
     w_out = offs_q % W_out
 
-    d = tl.arange(0, BLOCK_D)
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
     mask_c = d < D
     c = g * D + d
 
@@ -68,6 +81,7 @@ def _dcnv4_fwd_kernel(
     offset_base = offset_ptr + b * stride_ob + offs_q * stride_ow + g * K_TOTAL * 3
 
     mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
 
     # [BLOCK_Q, BLOCK_K]
     mask_vals = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
@@ -115,8 +129,7 @@ def _dcnv4_fwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    mask_now = (mask_idx == point_idx)[None, :]
-                    attn = tl.sum(mask_vals * mask_now, axis=1)
+                    attn = mask_vals[:, point_idx]
                 else:
                     ptr_mask_val = offset_base + 2 * K_TOTAL + point_idx
                     attn = tl.load(ptr_mask_val, mask=mask_q, other=0.0).to(tl.float32)
@@ -221,6 +234,7 @@ def _dcnv4_fwd_kernel(
     configs=_get_autotune_config(),
     key=["G", "D"],
     reset_to_zero=["grad_input_ptr"],
+    prune_configs_by={"early_config_prune": _prune_configs_dcnv4},
 )
 @triton.jit
 def _dcnv4_bwd_kernel(
@@ -270,22 +284,29 @@ def _dcnv4_bwd_kernel(
     SOFTMAX: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
-    g = tl.program_id(1)
+    pid_gd = tl.program_id(1)
     b = tl.program_id(2)
 
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
     offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
     mask_q = offs_q < (H_out * W_out)
 
     h_out = offs_q // W_out
     w_out = offs_q % W_out
 
-    d = tl.arange(0, BLOCK_D)
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
     mask_c = d < D
     c = g * D + d
 
     mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
     offset_base = offset_ptr + b * stride_ob + offs_q * stride_ow + g * K_TOTAL * 3
 
     # Load masks for softmax
@@ -321,12 +342,9 @@ def _dcnv4_bwd_kernel(
     center_h = KERNEL_H // 2
     center_w = KERNEL_W // 2
 
-    # [BLOCK_Q, BLOCK_K] to store gradients for mask
-    grad_attn = tl.zeros(
-        [BLOCK_K, BLOCK_Q],
-        dtype=tl.float32,
-    )  # Transposed for easier updates? No keep [Q, K]
-    grad_attn = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
+    if SOFTMAX:
+        # [BLOCK_Q, BLOCK_K] to store gradients for mask
+        grad_attn = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
 
     go_ptrs = (
         grad_out_ptr
@@ -352,8 +370,7 @@ def _dcnv4_bwd_kernel(
 
                 attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
                 if SOFTMAX:
-                    mask_now = (mask_idx == point_idx)[None, :]
-                    attn = tl.sum(mask_vals * mask_now, axis=1)
+                    attn = mask_vals[:, point_idx]
                 else:
                     ptr_mask_val = offset_base + 2 * K_TOTAL + point_idx
                     attn = tl.load(ptr_mask_val, mask=mask_q, other=0.0).to(tl.float32)
@@ -441,8 +458,12 @@ def _dcnv4_bwd_kernel(
                 # We need to write to column point_idx
                 # We can accumulate into a register tensor
                 # Using mask to update only current column
-                col_mask = (mask_idx == point_idx)[None, :]
-                grad_attn = tl.where(col_mask, grad_attn_val[:, None], grad_attn)
+                if SOFTMAX:
+                    col_mask = (mask_idx == point_idx)[None, :]
+                    grad_attn = tl.where(col_mask, grad_attn_val[:, None], grad_attn)
+                else:
+                    ptr_grad_mask = grad_offset_base + (2 * K_TOTAL + point_idx)
+                    tl.store(ptr_grad_mask, grad_attn_val, mask=mask_q)
 
                 grad_w = (
                     (-hh[:, None]) * v1
@@ -490,21 +511,18 @@ def _dcnv4_bwd_kernel(
 
                 point_idx += 1
 
-    grad_mask = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
     if SOFTMAX:
         grad_attn_scaled = grad_attn * mask_vals
         sum_scaled = tl.sum(grad_attn_scaled, axis=1)
         grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
-    else:
-        grad_mask = grad_attn
 
-    # Store grad_mask
-    ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-    tl.store(
-        ptr_grad_mask,
-        grad_mask,
-        mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-    )
+        # Store grad_mask
+        ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+        tl.store(
+            ptr_grad_mask,
+            grad_mask,
+            mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
+        )
 
 
 def dcnv4_forward(
@@ -557,12 +575,17 @@ def dcnv4_forward(
 
     output = torch.zeros((B, H_out, W_out, C), device=value.device, dtype=torch.float32)
 
-    BLOCK_D = _next_power_of_2(group_channels)
+    BLOCK_D = _choose_block_d(group_channels)
+    num_d_blocks = triton.cdiv(group_channels, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
 
     # Grid now depends on BLOCK_Q
     def grid(META):
-        return (triton.cdiv(H_out * W_out, META["BLOCK_Q"]), group, B)
+        return (
+            triton.cdiv(H_out * W_out, META["BLOCK_Q"]),
+            group * num_d_blocks,
+            B,
+        )
 
     _dcnv4_fwd_kernel[grid](
         value,
@@ -600,6 +623,7 @@ def dcnv4_forward(
         REMOVE_CENTER=int(remove_center),
         SOFTMAX=bool(softmax),
         BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
     )
 
     return output.to(dtype=value.dtype)
@@ -634,11 +658,16 @@ def dcnv4_backward(
     grad_input = torch.zeros_like(value, dtype=torch.float32)
     grad_offset = torch.zeros_like(offset, dtype=torch.float32)
 
-    BLOCK_D = _next_power_of_2(group_channels)
+    BLOCK_D = _choose_block_d(group_channels)
+    num_d_blocks = triton.cdiv(group_channels, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
 
     def grid(META):
-        return (triton.cdiv(H_out * W_out, META["BLOCK_Q"]), group, B)
+        return (
+            triton.cdiv(H_out * W_out, META["BLOCK_Q"]),
+            group * num_d_blocks,
+            B,
+        )
 
     _dcnv4_bwd_kernel[grid](
         value,
@@ -686,6 +715,7 @@ def dcnv4_backward(
         REMOVE_CENTER=int(remove_center),
         SOFTMAX=bool(softmax),
         BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
     )
 
     if value.dtype in (torch.float16, torch.bfloat16):

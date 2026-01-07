@@ -39,6 +39,19 @@ def _next_power_of_2(x: int) -> int:
     return 1 << (x - 1).bit_length()
 
 
+def _choose_block_d(channels: int) -> int:
+    """Heuristic block size for channel tiling."""
+    if channels <= 16:
+        return 16
+    if channels <= 32:
+        return 32
+    if channels <= 64:
+        return 64
+    if channels <= 128:
+        return 128
+    return 256
+
+
 def _compute_output_hw(
     height_in: int,
     width_in: int,
@@ -109,3 +122,49 @@ def _get_autotune_config():
                     ),
                 )
     return configs
+
+
+def _prune_block_configs(configs, q: int, d: int, block_d: int):
+    """Prune autotune configs using lightweight size heuristics."""
+    max_block_q = max(16, min(128, _next_power_of_2(q)))
+    max_block_d = max(16, min(256, _next_power_of_2(d)))
+
+    pruned = []
+    for cfg in configs:
+        block_q = cfg.kwargs.get("BLOCK_Q")
+        if block_q is None:
+            pruned.append(cfg)
+            continue
+
+        if block_q > max_block_q:
+            continue
+        if block_d > max_block_d:
+            continue
+
+        tile = block_q * block_d
+        if tile <= 1024 and cfg.num_warps > 4:
+            continue
+        if tile >= 4096 and cfg.num_warps < 8:
+            continue
+
+        pruned.append(cfg)
+
+    return pruned or configs
+
+
+def _prune_configs_dcnv4(configs, _nargs, **kwargs):
+    if "H_out" not in kwargs or "W_out" not in kwargs or "D" not in kwargs:
+        return configs
+    q = int(kwargs["H_out"]) * int(kwargs["W_out"])
+    d = int(kwargs["D"])
+    block_d = _choose_block_d(d)
+    return _prune_block_configs(configs, q, d, block_d)
+
+
+def _prune_configs_flash(configs, _nargs, **kwargs):
+    if "Q" not in kwargs or "D" not in kwargs:
+        return configs
+    q = int(kwargs["Q"])
+    d = int(kwargs["D"])
+    block_d = _choose_block_d(d)
+    return _prune_block_configs(configs, q, d, block_d)
