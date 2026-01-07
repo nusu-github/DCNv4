@@ -70,12 +70,11 @@ def _flash_deform_fwd_kernel(
 
     # Load all masks (Softmax is always true for flash deform?)
     # FlashDeformAttn usually has softmax
+    mask_k = mask_idx < K_TOTAL
+    mask_qk = mask_q[:, None] & mask_k[None, :]
     ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-    mask_vals = tl.load(
-        ptr_mask,
-        mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-        other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
-    ).to(tl.float32)
+    mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+    mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
     maxv = tl.max(mask_vals, axis=1)
     expv = tl.exp(mask_vals - maxv[:, None])
     denom = tl.sum(expv, axis=1)
@@ -199,6 +198,7 @@ def _flash_deform_bwd_kernel(
     grad_out_ptr,
     grad_input_ptr,
     grad_offset_ptr,
+    grad_attn_ptr,
     N,
     Q,
     G,
@@ -223,6 +223,10 @@ def _flash_deform_bwd_kernel(
     stride_goqf,
     stride_gogf,
     stride_godf,
+    stride_gab,
+    stride_gaq,
+    stride_gag,
+    stride_gak,
     L: tl.constexpr,
     K: tl.constexpr,
     K_TOTAL: tl.constexpr,
@@ -230,6 +234,7 @@ def _flash_deform_bwd_kernel(
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     NUM_D_BLOCKS: tl.constexpr,
+    WRITE_GRAD_ATTN: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
     pid_gd = tl.program_id(1)
@@ -251,12 +256,11 @@ def _flash_deform_bwd_kernel(
     tl.max_contiguous(mask_idx, BLOCK_K)
     offset_base = offset_ptr + b * stride_ob + offs_q * stride_oq + g * stride_og
 
+    mask_k = mask_idx < K_TOTAL
+    mask_qk = mask_q[:, None] & mask_k[None, :]
     ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-    mask_vals = tl.load(
-        ptr_mask,
-        mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-        other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
-    ).to(tl.float32)
+    mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+    mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
     maxv = tl.max(mask_vals, axis=1)
     expv = tl.exp(mask_vals - maxv[:, None])
     denom = tl.sum(expv, axis=1)
@@ -364,8 +368,18 @@ def _flash_deform_bwd_kernel(
             )
             grad_attn_val = tl.sum(go * interp, axis=1)
 
-            col_mask = (mask_idx == point_idx)[None, :]
-            grad_attn = tl.where(col_mask, grad_attn_val[:, None], grad_attn)
+            if WRITE_GRAD_ATTN:
+                ptr_grad_attn = (
+                    grad_attn_ptr
+                    + b * stride_gab
+                    + offs_q * stride_gaq
+                    + g * stride_gag
+                    + point_idx * stride_gak
+                )
+                tl.atomic_add(ptr_grad_attn, grad_attn_val, mask=mask_q)
+            else:
+                col_mask = (mask_idx == point_idx)[None, :]
+                grad_attn = tl.where(col_mask, grad_attn_val[:, None], grad_attn)
 
             grad_w = (
                 (-hh[:, None]) * v1
@@ -385,8 +399,12 @@ def _flash_deform_bwd_kernel(
 
             ptr_grad_w = grad_offset_base + point_idx * 2
             ptr_grad_h = grad_offset_base + point_idx * 2 + 1
-            tl.store(ptr_grad_w, grad_off_w_val, mask=mask_q)
-            tl.store(ptr_grad_h, grad_off_h_val, mask=mask_q)
+            if NUM_D_BLOCKS == 1:
+                tl.store(ptr_grad_w, grad_off_w_val, mask=mask_q)
+                tl.store(ptr_grad_h, grad_off_h_val, mask=mask_q)
+            else:
+                tl.atomic_add(ptr_grad_w, grad_off_w_val, mask=mask_q)
+                tl.atomic_add(ptr_grad_h, grad_off_h_val, mask=mask_q)
 
             base_grad_in = (
                 grad_input_ptr
@@ -419,16 +437,86 @@ def _flash_deform_bwd_kernel(
 
             point_idx += 1
 
+    if not WRITE_GRAD_ATTN:
+        grad_attn_scaled = grad_attn * mask_vals
+        sum_scaled = tl.sum(grad_attn_scaled, axis=1)
+        grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
+
+        ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+        tl.store(
+            ptr_grad_mask,
+            grad_mask,
+            mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
+        )
+
+
+@triton.autotune(
+    configs=_get_autotune_config(),
+    key=["Q", "G"],
+)
+@triton.jit
+def _flash_deform_softmax_bwd_kernel(
+    offset_ptr,
+    grad_attn_ptr,
+    grad_offset_ptr,
+    Q,
+    G,
+    stride_ob,
+    stride_oq,
+    stride_og,
+    stride_od,
+    stride_gab,
+    stride_gaq,
+    stride_gag,
+    stride_gak,
+    stride_gobf,
+    stride_goqf,
+    stride_gogf,
+    stride_godf,
+    K_TOTAL: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_Q: tl.constexpr,
+) -> None:
+    pid_q = tl.program_id(0)
+    g = tl.program_id(1)
+    b = tl.program_id(2)
+
+    offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
+    mask_q = offs_q < Q
+
+    mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
+    mask_k = mask_idx < K_TOTAL
+    mask_qk = mask_q[:, None] & mask_k[None, :]
+
+    offset_base = offset_ptr + b * stride_ob + offs_q * stride_oq + g * stride_og
+    ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+    mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+    mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
+    maxv = tl.max(mask_vals, axis=1)
+    expv = tl.exp(mask_vals - maxv[:, None])
+    denom = tl.sum(expv, axis=1)
+    mask_vals = expv / denom[:, None]
+
+    grad_attn_ptrs = (
+        grad_attn_ptr
+        + b * stride_gab
+        + offs_q[:, None] * stride_gaq
+        + g * stride_gag
+        + mask_idx[None, :] * stride_gak
+    )
+    grad_attn = tl.load(grad_attn_ptrs, mask=mask_qk, other=0.0).to(tl.float32)
+
     grad_attn_scaled = grad_attn * mask_vals
     sum_scaled = tl.sum(grad_attn_scaled, axis=1)
     grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
 
-    ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-    tl.store(
-        ptr_grad_mask,
-        grad_mask,
-        mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
+    grad_offset_base = (
+        grad_offset_ptr + b * stride_gobf + offs_q * stride_goqf + g * stride_gogf
     )
+    ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+    tl.store(ptr_grad_mask, grad_mask, mask=mask_qk)
 
 
 def flash_deform_attn_forward(
@@ -523,6 +611,14 @@ def flash_deform_attn_backward(
     BLOCK_D = _choose_block_d(D)
     num_d_blocks = triton.cdiv(D, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
+    use_grad_attn = num_d_blocks > 1
+    grad_attn = None
+    if use_grad_attn:
+        grad_attn = torch.zeros(
+            (B, Q, G, k_total),
+            device=value.device,
+            dtype=torch.float32,
+        )
 
     def grid(META):
         return (
@@ -539,6 +635,7 @@ def flash_deform_attn_backward(
         grad_output,
         grad_input,
         grad_offset,
+        grad_attn if grad_attn is not None else grad_offset,
         N,
         Q,
         G,
@@ -563,14 +660,52 @@ def flash_deform_attn_backward(
         grad_offset.stride(1),
         grad_offset.stride(2),
         grad_offset.stride(3),
+        (grad_attn.stride(0) if grad_attn is not None else 0),
+        (grad_attn.stride(1) if grad_attn is not None else 0),
+        (grad_attn.stride(2) if grad_attn is not None else 0),
+        (grad_attn.stride(3) if grad_attn is not None else 0),
         L=L,
         K=K,
         K_TOTAL=k_total,
         BLOCK_K=BLOCK_K,
         BLOCK_D=BLOCK_D,
         NUM_D_BLOCKS=num_d_blocks,
+        WRITE_GRAD_ATTN=use_grad_attn,
     )
 
+    if use_grad_attn:
+
+        def grid_softmax(META):
+            return (
+                triton.cdiv(Q, META["BLOCK_Q"]),
+                G,
+                B,
+            )
+
+        _flash_deform_softmax_bwd_kernel[grid_softmax](
+            sampling_loc_attn,
+            grad_attn,
+            grad_offset,
+            Q,
+            G,
+            sampling_loc_attn.stride(0),
+            sampling_loc_attn.stride(1),
+            sampling_loc_attn.stride(2),
+            sampling_loc_attn.stride(3),
+            grad_attn.stride(0),
+            grad_attn.stride(1),
+            grad_attn.stride(2),
+            grad_attn.stride(3),
+            grad_offset.stride(0),
+            grad_offset.stride(1),
+            grad_offset.stride(2),
+            grad_offset.stride(3),
+            K_TOTAL=k_total,
+            BLOCK_K=BLOCK_K,
+        )
+
     if value.dtype in (torch.float16, torch.bfloat16):
+        if sampling_loc_attn.dtype == torch.float16:
+            grad_offset = grad_offset.clamp(-65504.0, 65504.0)
         return grad_input.to(value.dtype), grad_offset.to(sampling_loc_attn.dtype)
     return grad_input, grad_offset

@@ -87,13 +87,12 @@ def _dcnv4_fwd_kernel(
     mask_vals = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
 
     if SOFTMAX:
-        # Load all masks for Softmax
+        # Load all masks for Softmax (avoid -inf in fp16 paths)
+        mask_k = mask_idx < K_TOTAL
+        mask_qk = mask_q[:, None] & mask_k[None, :]
         ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-        mask_vals = tl.load(
-            ptr_mask,
-            mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-            other=-float("inf"),
-        ).to(tl.float32)
+        mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+        mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
 
         maxv = tl.max(mask_vals, axis=1)
         expv = tl.exp(mask_vals - maxv[:, None])
@@ -245,6 +244,7 @@ def _dcnv4_bwd_kernel(
     grad_out_ptr,
     grad_input_ptr,
     grad_offset_ptr,
+    grad_attn_ptr,
     H_in,
     W_in,
     H_out,
@@ -271,6 +271,10 @@ def _dcnv4_bwd_kernel(
     stride_gohf,
     stride_gowf,
     stride_gocf,
+    stride_gab,
+    stride_gaq,
+    stride_gag,
+    stride_gak,
     stride_h,
     stride_w,
     pad_h,
@@ -287,6 +291,7 @@ def _dcnv4_bwd_kernel(
     BLOCK_D: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     NUM_D_BLOCKS: tl.constexpr,
+    WRITE_GRAD_ATTN: tl.constexpr,
 ) -> None:
     pid_q = tl.program_id(0)
     pid_gd = tl.program_id(1)
@@ -314,22 +319,18 @@ def _dcnv4_bwd_kernel(
     # Load masks for softmax
     mask_vals = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
     if SOFTMAX:
+        mask_k = mask_idx < K_TOTAL
+        mask_qk = mask_q[:, None] & mask_k[None, :]
         ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
-        mask_vals = tl.load(
-            ptr_mask,
-            mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
-            other=-1e10,  # Use large negative instead of -inf to avoid NaN in backward
-        ).to(tl.float32)
+        mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+        mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
         maxv = tl.max(mask_vals, axis=1)
         expv = tl.exp(mask_vals - maxv[:, None])
         denom = tl.sum(expv, axis=1)
         mask_vals = expv / denom[:, None]
 
     grad_offset_base = (
-        grad_offset_ptr
-        + b * stride_gobf
-        + offs_q * stride_ow  # Assuming grad_offset has same layout
-        + g * K_TOTAL * 3
+        grad_offset_ptr + b * stride_gobf + offs_q * stride_gowf + g * K_TOTAL * 3
     )
 
     half_w = (dilation_w * (KERNEL_W - 1)) // 2
@@ -463,11 +464,28 @@ def _dcnv4_bwd_kernel(
                 # We can accumulate into a register tensor
                 # Using mask to update only current column
                 if SOFTMAX:
-                    col_mask = (mask_idx == point_idx)[None, :]
-                    grad_attn = tl.where(col_mask, grad_attn_val[:, None], grad_attn)
+                    if WRITE_GRAD_ATTN:
+                        ptr_grad_attn = (
+                            grad_attn_ptr
+                            + b * stride_gab
+                            + offs_q * stride_gaq
+                            + g * stride_gag
+                            + point_idx * stride_gak
+                        )
+                        tl.atomic_add(ptr_grad_attn, grad_attn_val, mask=mask_q)
+                    else:
+                        col_mask = (mask_idx == point_idx)[None, :]
+                        grad_attn = tl.where(
+                            col_mask,
+                            grad_attn_val[:, None],
+                            grad_attn,
+                        )
                 else:
                     ptr_grad_mask = grad_offset_base + (2 * K_TOTAL + point_idx)
-                    tl.store(ptr_grad_mask, grad_attn_val, mask=mask_q)
+                    if NUM_D_BLOCKS == 1:
+                        tl.store(ptr_grad_mask, grad_attn_val, mask=mask_q)
+                    else:
+                        tl.atomic_add(ptr_grad_mask, grad_attn_val, mask=mask_q)
 
                 grad_w = (
                     (-hh[:, None]) * v1
@@ -485,13 +503,15 @@ def _dcnv4_bwd_kernel(
                 grad_off_w_val = offset_scale * attn * tl.sum(go * grad_w, axis=1)
                 grad_off_h_val = offset_scale * attn * tl.sum(go * grad_h, axis=1)
 
-                # Store grad_offset - only first pid_d writes to avoid race condition
-                # For num_d_blocks > 1, additional aggregation kernel would be needed
+                # Store grad_offset (x/y). Use atomic add when multiple D blocks contribute.
                 ptr_grad_w = grad_offset_base + point_idx * 2
                 ptr_grad_h = grad_offset_base + point_idx * 2 + 1
-                if pid_d == 0:
+                if NUM_D_BLOCKS == 1:
                     tl.store(ptr_grad_w, grad_off_w_val, mask=mask_q)
                     tl.store(ptr_grad_h, grad_off_h_val, mask=mask_q)
+                else:
+                    tl.atomic_add(ptr_grad_w, grad_off_w_val, mask=mask_q)
+                    tl.atomic_add(ptr_grad_h, grad_off_h_val, mask=mask_q)
 
                 # Atomic add to grad_input
                 base_grad_in = grad_input_ptr + b * stride_gib + c * stride_gic
@@ -517,7 +537,7 @@ def _dcnv4_bwd_kernel(
 
                 point_idx += 1
 
-    if SOFTMAX:
+    if SOFTMAX and (not WRITE_GRAD_ATTN):
         grad_attn_scaled = grad_attn * mask_vals
         sum_scaled = tl.sum(grad_attn_scaled, axis=1)
         grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
@@ -529,6 +549,76 @@ def _dcnv4_bwd_kernel(
             grad_mask,
             mask=(mask_q[:, None] & (mask_idx[None, :] < K_TOTAL)),
         )
+
+
+@triton.autotune(
+    configs=_get_autotune_config(),
+    key=["H_out", "W_out", "G"],
+)
+@triton.jit
+def _dcnv4_softmax_bwd_kernel(
+    offset_ptr,
+    grad_attn_ptr,
+    grad_offset_ptr,
+    H_out,
+    W_out,
+    G,
+    stride_ob,
+    stride_oh,
+    stride_ow,
+    stride_oc,
+    stride_gab,
+    stride_gaq,
+    stride_gag,
+    stride_gak,
+    stride_gobf,
+    stride_gohf,
+    stride_gowf,
+    stride_gocf,
+    K_TOTAL: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_Q: tl.constexpr,
+) -> None:
+    pid_q = tl.program_id(0)
+    g = tl.program_id(1)
+    b = tl.program_id(2)
+
+    offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
+    mask_q = offs_q < (H_out * W_out)
+
+    mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
+    mask_k = mask_idx < K_TOTAL
+    mask_qk = mask_q[:, None] & mask_k[None, :]
+
+    offset_base = offset_ptr + b * stride_ob + offs_q * stride_ow + g * K_TOTAL * 3
+    ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+    mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+    mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
+    maxv = tl.max(mask_vals, axis=1)
+    expv = tl.exp(mask_vals - maxv[:, None])
+    denom = tl.sum(expv, axis=1)
+    mask_vals = expv / denom[:, None]
+
+    grad_attn_ptrs = (
+        grad_attn_ptr
+        + b * stride_gab
+        + offs_q[:, None] * stride_gaq
+        + g * stride_gag
+        + mask_idx[None, :] * stride_gak
+    )
+    grad_attn = tl.load(grad_attn_ptrs, mask=mask_qk, other=0.0).to(tl.float32)
+
+    grad_attn_scaled = grad_attn * mask_vals
+    sum_scaled = tl.sum(grad_attn_scaled, axis=1)
+    grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
+
+    grad_offset_base = (
+        grad_offset_ptr + b * stride_gobf + offs_q * stride_gowf + g * K_TOTAL * 3
+    )
+    ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+    tl.store(ptr_grad_mask, grad_mask, mask=mask_qk)
 
 
 def dcnv4_forward(
@@ -667,6 +757,14 @@ def dcnv4_backward(
     BLOCK_D = _choose_block_d(group_channels)
     num_d_blocks = triton.cdiv(group_channels, BLOCK_D)
     BLOCK_K = _next_power_of_2(k_total)
+    use_grad_attn = bool(softmax) and num_d_blocks > 1
+    grad_attn = None
+    if use_grad_attn:
+        grad_attn = torch.zeros(
+            (B, H_out * W_out, group, k_total),
+            device=value.device,
+            dtype=torch.float32,
+        )
 
     def grid(META):
         return (
@@ -681,6 +779,7 @@ def dcnv4_backward(
         grad_output,
         grad_input,
         grad_offset,
+        grad_attn if grad_attn is not None else grad_offset,
         H_in,
         W_in,
         H_out,
@@ -707,6 +806,10 @@ def dcnv4_backward(
         grad_offset.stride(1),
         grad_offset.stride(2),
         grad_offset.stride(3),
+        (grad_attn.stride(0) if grad_attn is not None else 0),
+        (grad_attn.stride(1) if grad_attn is not None else 0),
+        (grad_attn.stride(2) if grad_attn is not None else 0),
+        (grad_attn.stride(3) if grad_attn is not None else 0),
         stride_h,
         stride_w,
         pad_h,
@@ -722,7 +825,40 @@ def dcnv4_backward(
         SOFTMAX=bool(softmax),
         BLOCK_D=BLOCK_D,
         NUM_D_BLOCKS=num_d_blocks,
+        WRITE_GRAD_ATTN=use_grad_attn,
     )
+
+    if use_grad_attn:
+
+        def grid_softmax(META):
+            return (
+                triton.cdiv(H_out * W_out, META["BLOCK_Q"]),
+                group,
+                B,
+            )
+
+        _dcnv4_softmax_bwd_kernel[grid_softmax](
+            offset,
+            grad_attn,
+            grad_offset,
+            H_out,
+            W_out,
+            group,
+            offset.stride(0),
+            offset.stride(1),
+            offset.stride(2),
+            offset.stride(3),
+            grad_attn.stride(0),
+            grad_attn.stride(1),
+            grad_attn.stride(2),
+            grad_attn.stride(3),
+            grad_offset.stride(0),
+            grad_offset.stride(1),
+            grad_offset.stride(2),
+            grad_offset.stride(3),
+            K_TOTAL=k_total,
+            BLOCK_K=BLOCK_K,
+        )
 
     if value.dtype in (torch.float16, torch.bfloat16):
         return grad_input.to(value.dtype), grad_offset.to(offset.dtype)

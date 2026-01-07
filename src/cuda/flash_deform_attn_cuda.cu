@@ -154,10 +154,10 @@ flash_deform_attn_cuda_backward(
         }));
   }
 
-  if(value.dtype() == torch::kHalf){
+  if (value.dtype() == torch::kHalf) {
+    grad_offset = grad_offset.clamp(-65504.0, 65504.0);
     return {grad_input.to(torch::kHalf), grad_offset.to(torch::kHalf)};
-  }
-  else{
+  } else {
     return {grad_input, grad_offset};
   }
 }

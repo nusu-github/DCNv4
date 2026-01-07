@@ -52,7 +52,7 @@ import json
 import math
 import os
 import random
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
 import torch
@@ -209,6 +209,7 @@ def _compute_error_distribution(
 
     Returns:
         ErrorDistribution with percentiles, CDF, and histogram data.
+
     """
     if cdf_thresholds is None:
         cdf_thresholds = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
@@ -233,7 +234,12 @@ def _compute_error_distribution(
     else:
         # Large tensor - use random sampling for percentile estimation
         # Generate random indices without creating a full permutation (memory-efficient)
-        sample_indices = torch.randint(0, n_elements, (MAX_SAMPLE_SIZE,), device=flat.device)
+        sample_indices = torch.randint(
+            0,
+            n_elements,
+            (MAX_SAMPLE_SIZE,),
+            device=flat.device,
+        )
         sample = flat[sample_indices]
         sorted_sample, _ = torch.sort(sample)
         n_sample = sorted_sample.numel()
@@ -253,12 +259,19 @@ def _compute_error_distribution(
     # For large tensors, use the sample for histogram to avoid memory issues
     if n_elements > MAX_SAMPLE_SIZE:
         # Reuse sample from percentile computation or create new one
-        hist_sample_indices = torch.randint(0, n_elements, (MAX_SAMPLE_SIZE,), device=flat.device)
+        hist_sample_indices = torch.randint(
+            0,
+            n_elements,
+            (MAX_SAMPLE_SIZE,),
+            device=flat.device,
+        )
         hist_data = flat[hist_sample_indices].cpu()
     else:
         hist_data = flat.cpu()
 
-    min_nonzero = hist_data[hist_data > 0].min().item() if (hist_data > 0).any() else 1e-12
+    min_nonzero = (
+        hist_data[hist_data > 0].min().item() if (hist_data > 0).any() else 1e-12
+    )
     log_min = max(math.log10(min_nonzero), -12)
     log_max = max(math.log10(max_val), log_min + 1) if max_val > 0 else log_min + 1
     bin_edges = torch.logspace(log_min, log_max, n_bins + 1)
@@ -302,6 +315,7 @@ def _estimate_theoretical_bound(
 
     Returns:
         Estimated theoretical error bound.
+
     """
     # Machine epsilon
     if dtype == torch.float16:
@@ -317,27 +331,26 @@ def _estimate_theoretical_bound(
         # But correlated, so sqrt scaling
         return 4.0 * math.sqrt(n_points) * eps
 
-    elif op_type == "dcnv4_bwd":
+    if op_type == "dcnv4_bwd":
         # Backward has atomic adds with fan_in ~ n_points
         # Plus gradient of bilinear interp (more terms)
         # grad_offset has more operations than grad_input
         return 8.0 * math.sqrt(n_points) * eps
 
-    elif op_type == "flash_fwd":
+    if op_type == "flash_fwd":
         # Softmax over K points + bilinear interp per point
         # softmax: exp, sum, div ~ 3K ops
         # bilinear: 4K ops
         # Total ~ 7K ops, but highly correlated
         return 10.0 * math.sqrt(n_points) * eps
 
-    elif op_type == "flash_bwd":
+    if op_type == "flash_bwd":
         # Backward through softmax + bilinear
         # More operations, atomic adds
         return 20.0 * math.sqrt(n_points) * eps
 
-    else:
-        # Conservative fallback
-        return 100.0 * math.sqrt(n_points) * eps
+    # Conservative fallback
+    return 100.0 * math.sqrt(n_points) * eps
 
 
 @dataclass
@@ -380,6 +393,7 @@ def _assert_close(
         expected: The reference tensor (CUDA output, ground truth).
         tol: Tolerance thresholds.
         label: Description for error messages.
+
     """
     if not _isfinite(actual):
         msg = f"{label}: Triton output contains NaN/Inf"
@@ -389,7 +403,13 @@ def _assert_close(
         raise AssertionError(msg)
 
     try:
-        torch.testing.assert_close(actual, expected, rtol=tol.rtol, atol=tol.atol, equal_nan=False)
+        torch.testing.assert_close(
+            actual,
+            expected,
+            rtol=tol.rtol,
+            atol=tol.atol,
+            equal_nan=False,
+        )
     except AssertionError as e:
         stats = _tensor_diff_stats(actual, expected)
         msg = (
@@ -491,7 +511,6 @@ def _make_boundary_sampling_locations(
 
     # Split into location and attention parts
     n_locs = k_total * 2  # x, y pairs
-    n_attn = k_total
 
     # Corner cases for normalized coordinates
     boundary_values = [
@@ -508,7 +527,7 @@ def _make_boundary_sampling_locations(
     loc_part = sampling_loc_attn[..., :n_locs]
     for i, val in enumerate(boundary_values):
         idx = i % n_locs
-        loc_part[..., idx::len(boundary_values)] = val
+        loc_part[..., idx :: len(boundary_values)] = val
 
     # Fill attention with uniform weights (will be softmaxed)
     attn_part = sampling_loc_attn[..., n_locs:]
@@ -632,7 +651,10 @@ def _make_flash_fixed_pattern_value(
         # Alternating pattern
         checker = (torch.arange(total_len, device=device) % 2) * 2 - 1
         value[...] = checker.to(dtype)[None, :, None, None].expand(
-            B, total_len, n_heads, d_per_head
+            B,
+            total_len,
+            n_heads,
+            d_per_head,
         )
 
     elif pattern == "edge":
@@ -658,6 +680,7 @@ def get_input_configs(adversarial: bool = False) -> list[InputConfig]:
 
     Returns:
         List of InputConfig objects to test.
+
     """
     configs = [
         InputConfig(name="standard", value_scale=1.0, offset_scale=0.1),
@@ -671,7 +694,7 @@ def get_input_configs(adversarial: bool = False) -> list[InputConfig]:
                     InputConfig(
                         name=f"offset_scale_{offset_scale}",
                         offset_scale=offset_scale,
-                    )
+                    ),
                 )
 
         # Add value scale sweep
@@ -681,7 +704,7 @@ def get_input_configs(adversarial: bool = False) -> list[InputConfig]:
                     InputConfig(
                         name=f"value_scale_{value_scale:.0e}",
                         value_scale=value_scale,
-                    )
+                    ),
                 )
 
         # Add boundary and fixed pattern tests
@@ -699,7 +722,7 @@ def get_input_configs(adversarial: bool = False) -> list[InputConfig]:
                     name="fixed_patterns",
                     include_fixed_patterns=True,
                 ),
-            ]
+            ],
         )
 
     return configs
@@ -750,7 +773,11 @@ def run_dcnv4_case(
         input_config = InputConfig(name="standard")
 
     base_name = f"DCNv4 B{case.B} H{case.H} W{case.W} C{case.C} g{case.group} k{case.kernel_h}x{case.kernel_w}"
-    name = f"{base_name} [{input_config.name}]" if input_config.name != "standard" else base_name
+    name = (
+        f"{base_name} [{input_config.name}]"
+        if input_config.name != "standard"
+        else base_name
+    )
 
     group_channels = case.C // case.group
     if case.C % case.group != 0:
@@ -766,7 +793,10 @@ def run_dcnv4_case(
     worst: dict[str, DiffStats] = {}
 
     # Input generation helper
-    def make_inputs(seed: int, pattern: str | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def make_inputs(
+        seed: int,
+        pattern: str | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         torch.manual_seed(seed)
         shape = (case.B, case.H, case.W, case.C)
 
@@ -775,13 +805,26 @@ def run_dcnv4_case(
             value = _make_fixed_pattern_value(shape, pattern, dtype=torch.float32)
         else:
             # Random inputs scaled by config
-            value = torch.randn(*shape, device="cuda", dtype=torch.float32) * input_config.value_scale
+            value = (
+                torch.randn(*shape, device="cuda", dtype=torch.float32)
+                * input_config.value_scale
+            )
 
         offset = (
-            torch.randn(case.B, case.H, case.W, offset_dim, device="cuda", dtype=torch.float32)
+            torch.randn(
+                case.B,
+                case.H,
+                case.W,
+                offset_dim,
+                device="cuda",
+                dtype=torch.float32,
+            )
             * input_config.offset_scale
         )
-        grad_output = torch.randn(*shape, device="cuda", dtype=torch.float32) * input_config.value_scale
+        grad_output = (
+            torch.randn(*shape, device="cuda", dtype=torch.float32)
+            * input_config.value_scale
+        )
         return value, offset, grad_output
 
     # Warmup once (helps on first JIT / autotune)
@@ -988,7 +1031,11 @@ def run_flash_case(
         f"FlashDeformAttn B{case.B} L{total_len} heads{case.n_heads} d{case.d_per_head} "
         f"levels{n_levels} points{case.n_points}"
     )
-    name = f"{base_name} [{input_config.name}]" if input_config.name != "standard" else base_name
+    name = (
+        f"{base_name} [{input_config.name}]"
+        if input_config.name != "standard"
+        else base_name
+    )
 
     spatial_shapes_t = torch.tensor(
         case.spatial_shapes,
@@ -1009,32 +1056,63 @@ def run_flash_case(
         # Value tensor
         if pattern is not None:
             value = _make_flash_fixed_pattern_value(
-                case.B, total_len, case.n_heads, case.d_per_head, pattern, dtype=torch.float16
+                case.B,
+                total_len,
+                case.n_heads,
+                case.d_per_head,
+                pattern,
+                dtype=torch.float16,
             )
         else:
             value = (
-                torch.randn(case.B, total_len, case.n_heads, case.d_per_head, device="cuda", dtype=torch.float16)
+                torch.randn(
+                    case.B,
+                    total_len,
+                    case.n_heads,
+                    case.d_per_head,
+                    device="cuda",
+                    dtype=torch.float16,
+                )
                 * input_config.value_scale
             )
 
         # Sampling locations and attention
         if input_config.include_boundary_sampling:
             sampling_loc_attn = _make_boundary_sampling_locations(
-                case.B, total_len, case.n_heads, k_total, dtype=torch.float16
+                case.B,
+                total_len,
+                case.n_heads,
+                k_total,
+                dtype=torch.float16,
             )
         elif input_config.include_extreme_attention:
             sampling_loc_attn = _make_extreme_attention_weights(
-                case.B, total_len, case.n_heads, k_total, dtype=torch.float16
+                case.B,
+                total_len,
+                case.n_heads,
+                k_total,
+                dtype=torch.float16,
             )
         else:
             # Standard random in [0, 1)
             sampling_loc_attn = torch.rand(
-                case.B, total_len, case.n_heads, k_total * 3, device="cuda", dtype=torch.float16
+                case.B,
+                total_len,
+                case.n_heads,
+                k_total * 3,
+                device="cuda",
+                dtype=torch.float16,
             )
 
         # Gradient output (3D: B, total_len, heads*d)
         grad_output_3d = (
-            torch.randn(case.B, total_len, case.n_heads * case.d_per_head, device="cuda", dtype=torch.float16)
+            torch.randn(
+                case.B,
+                total_len,
+                case.n_heads * case.d_per_head,
+                device="cuda",
+                dtype=torch.float16,
+            )
             * input_config.value_scale
         )
 
@@ -1069,7 +1147,10 @@ def run_flash_case(
 
     # Trials
     for t, pattern in trial_configs:
-        value, sampling_loc_attn, grad_output_3d = make_inputs(seed_base + t, pattern=pattern)
+        value, sampling_loc_attn, grad_output_3d = make_inputs(
+            seed_base + t,
+            pattern=pattern,
+        )
 
         # Forward
         cuda_out = _C.flash_deform_attn_forward(
@@ -1254,6 +1335,7 @@ def validate_dcnv4_constraints(case: DCNv4Case) -> tuple[bool, str]:
 
     Returns:
         (valid, reason): True if valid, else False with explanation.
+
     """
     group_channels = case.C // case.group
     if case.C % case.group != 0:
@@ -1265,14 +1347,21 @@ def validate_dcnv4_constraints(case: DCNv4Case) -> tuple[bool, str]:
 
     # Constraint 2: block_multiplier divisibility
     # H_out = (H + 2*pad - dil*(kernel-1) - 1) / stride + 1
-    h_out = (case.H + 2 * case.pad_h - case.dil_h * (case.kernel_h - 1) - 1) // case.stride_h + 1
-    w_out = (case.W + 2 * case.pad_w - case.dil_w * (case.kernel_w - 1) - 1) // case.stride_w + 1
+    h_out = (
+        case.H + 2 * case.pad_h - case.dil_h * (case.kernel_h - 1) - 1
+    ) // case.stride_h + 1
+    w_out = (
+        case.W + 2 * case.pad_w - case.dil_w * (case.kernel_w - 1) - 1
+    ) // case.stride_w + 1
     Q = h_out * w_out
     block_multiplier = 1024 // case.C
     if block_multiplier == 0:
         return False, f"C ({case.C}) too large, block_multiplier would be 0"
     if (case.B * Q) % block_multiplier != 0:
-        return False, f"(B*Q)={case.B * Q} not divisible by block_multiplier={block_multiplier}"
+        return (
+            False,
+            f"(B*Q)={case.B * Q} not divisible by block_multiplier={block_multiplier}",
+        )
 
     # Constraint 3: kernel size
     k_total = case.kernel_h * case.kernel_w
@@ -1291,6 +1380,7 @@ def validate_flash_constraints(case: FlashCase) -> tuple[bool, str]:
 
     Returns:
         (valid, reason): True if valid, else False with explanation.
+
     """
     # Constraint 1: d_stride divisibility
     if case.d_per_head % 8 != 0:
@@ -1303,12 +1393,18 @@ def validate_flash_constraints(case: FlashCase) -> tuple[bool, str]:
     if block_multiplier == 0:
         return False, f"embed_dim ({embed_dim}) too large, block_multiplier would be 0"
     if (case.B * total_len) % block_multiplier != 0:
-        return False, f"(B*Q)={case.B * total_len} not divisible by block_multiplier={block_multiplier}"
+        return (
+            False,
+            f"(B*Q)={case.B * total_len} not divisible by block_multiplier={block_multiplier}",
+        )
 
     return True, "OK"
 
 
-def generate_valid_dcnv4_shape(rng: random.Random, max_attempts: int = 100) -> DCNv4Case | None:
+def generate_valid_dcnv4_shape(
+    rng: random.Random,
+    max_attempts: int = 100,
+) -> DCNv4Case | None:
     """Generate a random DCNv4Case satisfying CUDA kernel constraints.
 
     Uses rejection sampling with constraint-aware parameter selection.
@@ -1338,7 +1434,7 @@ def generate_valid_dcnv4_shape(rng: random.Random, max_attempts: int = 100) -> D
         Q_target = q_step * q_mult
         # Find H, W close to sqrt(Q_target)
         H = W = int(Q_target**0.5)
-        while H * W < Q_target:
+        while Q_target > H * W:
             H += 1
         # Adjust to make Q exactly divisible
         while (B * H * W) % block_multiplier != 0:
@@ -1366,7 +1462,10 @@ def generate_valid_dcnv4_shape(rng: random.Random, max_attempts: int = 100) -> D
     return None
 
 
-def generate_valid_flash_shape(rng: random.Random, max_attempts: int = 100) -> FlashCase | None:
+def generate_valid_flash_shape(
+    rng: random.Random,
+    max_attempts: int = 100,
+) -> FlashCase | None:
     """Generate a random FlashCase satisfying CUDA kernel constraints.
 
     Uses rejection sampling with constraint-aware parameter selection.
@@ -1442,6 +1541,7 @@ def fuzz_suite(
 
     Returns:
         (dcnv4_cases, flash_cases): Lists of valid test cases.
+
     """
     rng = random.Random(seed)
 
@@ -1479,7 +1579,11 @@ def run_dcnv4_tolerance_analysis(
     """
     name = f"DCNv4 B{case.B} H{case.H} W{case.W} C{case.C} g{case.group}"
     group_channels = case.C // case.group
-    offset_dim, valid_range = _dcnv4_offset_dim(case.group, case.kernel_h, case.kernel_w)
+    offset_dim, valid_range = _dcnv4_offset_dim(
+        case.group,
+        case.kernel_h,
+        case.kernel_w,
+    )
     k_total = case.kernel_h * case.kernel_w
 
     # Collect all errors across trials
@@ -1493,55 +1597,120 @@ def run_dcnv4_tolerance_analysis(
         cfg_trials = trials // len(input_configs)
         for t in range(cfg_trials):
             torch.manual_seed(seed_base + t)
-            value = torch.randn(case.B, case.H, case.W, case.C, device="cuda", dtype=torch.float32)
+            value = torch.randn(
+                case.B,
+                case.H,
+                case.W,
+                case.C,
+                device="cuda",
+                dtype=torch.float32,
+            )
             value *= input_cfg.value_scale
-            offset = torch.randn(case.B, case.H, case.W, offset_dim, device="cuda", dtype=torch.float32)
+            offset = torch.randn(
+                case.B,
+                case.H,
+                case.W,
+                offset_dim,
+                device="cuda",
+                dtype=torch.float32,
+            )
             offset *= input_cfg.offset_scale
-            grad_output = torch.randn(case.B, case.H, case.W, case.C, device="cuda", dtype=torch.float32)
+            grad_output = torch.randn(
+                case.B,
+                case.H,
+                case.W,
+                case.C,
+                device="cuda",
+                dtype=torch.float32,
+            )
             grad_output *= input_cfg.value_scale
 
             # Forward
             cuda_out = _C.dcnv4_forward(
-                value, offset,
-                case.kernel_h, case.kernel_w,
-                case.stride_h, case.stride_w,
-                case.pad_h, case.pad_w,
-                case.dil_h, case.dil_w,
-                case.group, group_channels, case.offset_scale,
-                256, 0, 8, 128, False,
+                value,
+                offset,
+                case.kernel_h,
+                case.kernel_w,
+                case.stride_h,
+                case.stride_w,
+                case.pad_h,
+                case.pad_w,
+                case.dil_h,
+                case.dil_w,
+                case.group,
+                group_channels,
+                case.offset_scale,
+                256,
+                0,
+                8,
+                128,
+                False,
             )
             triton_out = triton_ops.dcnv4_forward(
-                value, offset,
-                case.kernel_h, case.kernel_w,
-                case.stride_h, case.stride_w,
-                case.pad_h, case.pad_w,
-                case.dil_h, case.dil_w,
-                case.group, group_channels, case.offset_scale,
-                0, False,
+                value,
+                offset,
+                case.kernel_h,
+                case.kernel_w,
+                case.stride_h,
+                case.stride_w,
+                case.pad_h,
+                case.pad_w,
+                case.dil_h,
+                case.dil_w,
+                case.group,
+                group_channels,
+                case.offset_scale,
+                0,
+                False,
             )
             fwd_errors.append((triton_out - cuda_out).abs().flatten())
 
             # Backward
             cuda_gi, cuda_go = _C.dcnv4_backward(
-                value, offset,
-                case.kernel_h, case.kernel_w,
-                case.stride_h, case.stride_w,
-                case.pad_h, case.pad_w,
-                case.dil_h, case.dil_w,
-                case.group, group_channels, case.offset_scale,
-                256, grad_output, 0, 2, 128, False,
+                value,
+                offset,
+                case.kernel_h,
+                case.kernel_w,
+                case.stride_h,
+                case.stride_w,
+                case.pad_h,
+                case.pad_w,
+                case.dil_h,
+                case.dil_w,
+                case.group,
+                group_channels,
+                case.offset_scale,
+                256,
+                grad_output,
+                0,
+                2,
+                128,
+                False,
             )
             triton_gi, triton_go = triton_ops.dcnv4_backward(
-                value, offset, grad_output,
-                case.kernel_h, case.kernel_w,
-                case.stride_h, case.stride_w,
-                case.pad_h, case.pad_w,
-                case.dil_h, case.dil_w,
-                case.group, group_channels, case.offset_scale,
-                0, False,
+                value,
+                offset,
+                grad_output,
+                case.kernel_h,
+                case.kernel_w,
+                case.stride_h,
+                case.stride_w,
+                case.pad_h,
+                case.pad_w,
+                case.dil_h,
+                case.dil_w,
+                case.group,
+                group_channels,
+                case.offset_scale,
+                0,
+                False,
             )
             gi_errors.append((triton_gi - cuda_gi).abs().flatten())
-            go_errors.append((triton_go[..., :valid_range] - cuda_go[..., :valid_range]).abs().flatten())
+            go_errors.append(
+                (triton_go[..., :valid_range] - cuda_go[..., :valid_range])
+                .abs()
+                .flatten(),
+            )
 
     # Compute distributions
     all_fwd = torch.cat(fwd_errors)
@@ -1566,20 +1735,22 @@ def run_dcnv4_tolerance_analysis(
         recommended = 2.0 * max(dist.p9999, theoretical)
         safety_margin = recommended / observed_max if observed_max > 0 else float("inf")
 
-        results.append(ToleranceAnalysisResult(
-            op_name=name,
-            tensor_name=tensor_name,
-            n_trials=trials,
-            n_elements_per_trial=errors.numel() // trials,
-            observed_max=observed_max,
-            observed_p9999=dist.p9999,
-            observed_p999=dist.p999,
-            observed_p99=dist.p99,
-            theoretical_bound=theoretical,
-            recommended_atol=recommended,
-            safety_margin=safety_margin,
-            distribution=dist,
-        ))
+        results.append(
+            ToleranceAnalysisResult(
+                op_name=name,
+                tensor_name=tensor_name,
+                n_trials=trials,
+                n_elements_per_trial=errors.numel() // trials,
+                observed_max=observed_max,
+                observed_p9999=dist.p9999,
+                observed_p999=dist.p999,
+                observed_p99=dist.p99,
+                theoretical_bound=theoretical,
+                recommended_atol=recommended,
+                safety_margin=safety_margin,
+                distribution=dist,
+            ),
+        )
 
     return results
 
@@ -1595,9 +1766,15 @@ def run_flash_tolerance_analysis(
     total_len = sum(h * w for h, w in case.spatial_shapes)
     n_levels = len(case.spatial_shapes)
     k_total = n_levels * case.n_points
-    name = f"FlashDeformAttn B{case.B} L{total_len} heads{case.n_heads} d{case.d_per_head}"
+    name = (
+        f"FlashDeformAttn B{case.B} L{total_len} heads{case.n_heads} d{case.d_per_head}"
+    )
 
-    spatial_shapes_t = torch.tensor(case.spatial_shapes, device="cuda", dtype=torch.long)
+    spatial_shapes_t = torch.tensor(
+        case.spatial_shapes,
+        device="cuda",
+        dtype=torch.long,
+    )
     level_start_index = _flash_level_start_index(case.spatial_shapes)
 
     # Collect errors
@@ -1612,49 +1789,100 @@ def run_flash_tolerance_analysis(
         for t in range(cfg_trials):
             torch.manual_seed(seed_base + t)
 
-            value = torch.randn(
-                case.B, total_len, case.n_heads, case.d_per_head,
-                device="cuda", dtype=torch.float16
-            ) * input_cfg.value_scale
+            value = (
+                torch.randn(
+                    case.B,
+                    total_len,
+                    case.n_heads,
+                    case.d_per_head,
+                    device="cuda",
+                    dtype=torch.float16,
+                )
+                * input_cfg.value_scale
+            )
 
             if input_cfg.include_boundary_sampling:
                 sampling_loc_attn = _make_boundary_sampling_locations(
-                    case.B, total_len, case.n_heads, k_total, dtype=torch.float16
+                    case.B,
+                    total_len,
+                    case.n_heads,
+                    k_total,
+                    dtype=torch.float16,
                 )
             elif input_cfg.include_extreme_attention:
                 sampling_loc_attn = _make_extreme_attention_weights(
-                    case.B, total_len, case.n_heads, k_total, dtype=torch.float16
+                    case.B,
+                    total_len,
+                    case.n_heads,
+                    k_total,
+                    dtype=torch.float16,
                 )
             else:
                 sampling_loc_attn = torch.rand(
-                    case.B, total_len, case.n_heads, k_total * 3,
-                    device="cuda", dtype=torch.float16
+                    case.B,
+                    total_len,
+                    case.n_heads,
+                    k_total * 3,
+                    device="cuda",
+                    dtype=torch.float16,
                 )
 
-            grad_output_3d = torch.randn(
-                case.B, total_len, case.n_heads * case.d_per_head,
-                device="cuda", dtype=torch.float16
-            ) * input_cfg.value_scale
+            grad_output_3d = (
+                torch.randn(
+                    case.B,
+                    total_len,
+                    case.n_heads * case.d_per_head,
+                    device="cuda",
+                    dtype=torch.float16,
+                )
+                * input_cfg.value_scale
+            )
 
             # Forward
             cuda_out = _C.flash_deform_attn_forward(
-                value, spatial_shapes_t, level_start_index, sampling_loc_attn,
-                64, case.n_points, 8, 128,
+                value,
+                spatial_shapes_t,
+                level_start_index,
+                sampling_loc_attn,
+                64,
+                case.n_points,
+                8,
+                128,
             )
             triton_out = triton_ops.flash_deform_attn_forward(
-                value, spatial_shapes_t, level_start_index, sampling_loc_attn, case.n_points,
+                value,
+                spatial_shapes_t,
+                level_start_index,
+                sampling_loc_attn,
+                case.n_points,
             )
             fwd_errors.append((triton_out.float() - cuda_out.float()).abs().flatten())
 
             # Backward
             cuda_gv, cuda_go = _C.flash_deform_attn_backward(
-                value, spatial_shapes_t, level_start_index, sampling_loc_attn,
-                grad_output_3d.contiguous(), 64, case.n_points, 2, 128,
+                value,
+                spatial_shapes_t,
+                level_start_index,
+                sampling_loc_attn,
+                grad_output_3d.contiguous(),
+                64,
+                case.n_points,
+                2,
+                128,
             )
-            grad_output_4d = grad_output_3d.view(case.B, total_len, case.n_heads, case.d_per_head).contiguous()
+            grad_output_4d = grad_output_3d.view(
+                case.B,
+                total_len,
+                case.n_heads,
+                case.d_per_head,
+            ).contiguous()
             triton_gv, triton_go = triton_ops.flash_deform_attn_backward(
-                value, spatial_shapes_t, level_start_index, sampling_loc_attn,
-                grad_output_4d, case.n_points,
+                value,
+                spatial_shapes_t,
+                level_start_index,
+                sampling_loc_attn,
+                grad_output_4d,
+                case.n_points,
             )
             gv_errors.append((triton_gv.float() - cuda_gv.float()).abs().flatten())
             go_errors.append((triton_go.float() - cuda_go.float()).abs().flatten())
@@ -1681,20 +1909,22 @@ def run_flash_tolerance_analysis(
         recommended = 2.0 * max(dist.p9999, theoretical)
         safety_margin = recommended / observed_max if observed_max > 0 else float("inf")
 
-        results.append(ToleranceAnalysisResult(
-            op_name=name,
-            tensor_name=tensor_name,
-            n_trials=trials,
-            n_elements_per_trial=errors.numel() // trials,
-            observed_max=observed_max,
-            observed_p9999=dist.p9999,
-            observed_p999=dist.p999,
-            observed_p99=dist.p99,
-            theoretical_bound=theoretical,
-            recommended_atol=recommended,
-            safety_margin=safety_margin,
-            distribution=dist,
-        ))
+        results.append(
+            ToleranceAnalysisResult(
+                op_name=name,
+                tensor_name=tensor_name,
+                n_trials=trials,
+                n_elements_per_trial=errors.numel() // trials,
+                observed_max=observed_max,
+                observed_p9999=dist.p9999,
+                observed_p999=dist.p999,
+                observed_p99=dist.p99,
+                theoretical_bound=theoretical,
+                recommended_atol=recommended,
+                safety_margin=safety_margin,
+                distribution=dist,
+            ),
+        )
 
     return results
 
@@ -1708,12 +1938,16 @@ def print_tolerance_analysis(results: list[ToleranceAnalysisResult]) -> None:
     for r in results:
         print(f"\n{r.op_name} / {r.tensor_name}")
         print(f"  Trials: {r.n_trials}, Elements/trial: {r.n_elements_per_trial:,}")
-        print(f"  Observed: max={r.observed_max:.3e}  p9999={r.observed_p9999:.3e}  p999={r.observed_p999:.3e}  p99={r.observed_p99:.3e}")
+        print(
+            f"  Observed: max={r.observed_max:.3e}  p9999={r.observed_p9999:.3e}  p999={r.observed_p999:.3e}  p99={r.observed_p99:.3e}",
+        )
         print(f"  Theoretical bound: {r.theoretical_bound:.3e}")
-        print(f"  RECOMMENDED atol: {r.recommended_atol:.3e}  (safety margin: {r.safety_margin:.1f}x)")
+        print(
+            f"  RECOMMENDED atol: {r.recommended_atol:.3e}  (safety margin: {r.safety_margin:.1f}x)",
+        )
 
         if r.distribution:
-            print(f"  CDF: ", end="")
+            print("  CDF: ", end="")
             for threshold, frac in r.distribution.cdf_points[:5]:
                 print(f"{threshold:.0e}:{frac:.1%} ", end="")
             print()
@@ -1825,7 +2059,7 @@ def main() -> int:
         print("=" * 80)
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"Trials per case: {args.tolerance_trials}")
-        print(f"Including adversarial inputs: True")
+        print("Including adversarial inputs: True")
 
         all_analysis_results: list[ToleranceAnalysisResult] = []
 
@@ -1941,7 +2175,9 @@ def main() -> int:
     mode_str = "nightly" if args.nightly else ("quick" if args.quick else "standard")
     adv_str = " +adversarial" if args.adversarial else ""
     fuzz_str = f" +fuzz({args.fuzz})" if args.fuzz > 0 else ""
-    print(f"mode={mode_str}{adv_str}{fuzz_str} suite={args.suite} seed_base={args.seed_base}")
+    print(
+        f"mode={mode_str}{adv_str}{fuzz_str} suite={args.suite} seed_base={args.seed_base}",
+    )
 
     all_passed = True
 
@@ -1975,7 +2211,9 @@ def main() -> int:
                     )
                 except Exception as e:
                     all_passed = False
-                    cfg_name = f" [{input_cfg.name}]" if input_cfg.name != "standard" else ""
+                    cfg_name = (
+                        f" [{input_cfg.name}]" if input_cfg.name != "standard" else ""
+                    )
                     print(f"\n[{c}{cfg_name}] FAIL")
                     print(str(e))
                     report["results"].append(
@@ -2017,7 +2255,9 @@ def main() -> int:
                     )
                 except Exception as e:
                     all_passed = False
-                    cfg_name = f" [{input_cfg.name}]" if input_cfg.name != "standard" else ""
+                    cfg_name = (
+                        f" [{input_cfg.name}]" if input_cfg.name != "standard" else ""
+                    )
                     print(f"\n[{c}{cfg_name}] FAIL")
                     print(str(e))
                     report["results"].append(
@@ -2036,7 +2276,9 @@ def main() -> int:
         print("=" * 70)
 
         fuzz_dcn_cases, fuzz_flash_cases = fuzz_suite(args.fuzz, args.fuzz_seed)
-        print(f"Generated {len(fuzz_dcn_cases)} DCNv4 cases, {len(fuzz_flash_cases)} Flash cases")
+        print(
+            f"Generated {len(fuzz_dcn_cases)} DCNv4 cases, {len(fuzz_flash_cases)} Flash cases",
+        )
 
         # Use only standard input config for fuzzing (faster)
         fuzz_input_cfg = InputConfig(name="fuzz")
