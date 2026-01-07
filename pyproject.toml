@@ -1,0 +1,13 @@
+[project]
+name = "DCNv4"
+version = "1.0.0.post2"
+description = "PyTorch Wrapper for CUDA Functions of DCNv4"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [{ name = "Yuwen Xiong" }, { name = "Feng Wang" }]
+dependencies = ["torch", "torchvision"]
+
+[build-system]
+requires = ["setuptools>=77.0.0", "wheel", "torch>=2.0.0", "ninja", "numpy"]
+build-backend = "setuptools.build_meta"
