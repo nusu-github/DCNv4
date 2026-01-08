@@ -32,11 +32,10 @@ Kernel Configuration:
         - n_thread: Total number of threads per CUDA block
 """
 
+import torch
 from torch.amp import custom_bwd, custom_fwd
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
-
-from dcnv4 import _C
 
 try:
     from dcnv4 import triton_ops as _triton_ops
@@ -282,7 +281,7 @@ class DCNv4Function(Function):
                 False,
             )
         else:
-            output = _C.dcnv4_forward(*args)
+            output = torch.ops.dcnv4_C.dcnv4_forward(*args)
         ctx.save_for_backward(input, offset_mask)
 
         return output
@@ -353,7 +352,7 @@ class DCNv4Function(Function):
                 False,
             )
         else:
-            grad_input, grad_offset_mask = _C.dcnv4_backward(*args)
+            grad_input, grad_offset_mask = torch.ops.dcnv4_C.dcnv4_backward(*args)
 
         return (
             grad_input,

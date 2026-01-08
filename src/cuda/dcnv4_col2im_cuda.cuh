@@ -1,21 +1,6 @@
-#include <algorithm>
 #include <cstdio>
-#include <cstring>
-
-#include <ATen/ATen.h>
-#include <ATen/cuda/CUDAContext.h>
-
-#include <THC/THCAtomics.cuh>
 
 #include "common.h"
-#include <ATen/ATen.h>
-#include <ATen/OpMathType.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
-#include <cuda.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K,
           bool softmax>
@@ -36,7 +21,6 @@ __global__ void backward_kernel_dcn(
 
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
-  constexpr int li = 0;
 
   opmath_t *const cache_g_mask_before_softmax = (opmath_t *)(_s); // mG x K
   opmath_t *const cache_grad_offset =
@@ -213,12 +197,6 @@ __global__ void backward_kernel_dcn_warp_primitive(
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
 
-  constexpr int li = 0;
-  const int tid =
-      (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
-
-  const int lane_id = tid % kWarpSize;
-
   // find the position of current group in the current warp
   const int group_per_warp = kWarpSize / blockDim.x;
   const int group_in_warp_id = (threadIdx.z * G + threadIdx.y) % group_per_warp;
@@ -303,9 +281,6 @@ __global__ void backward_kernel_dcn_warp_primitive(
   grad_offset += (bi * Q + qi) * padded_offset_dim + gi * K * 3;
   opmath_t *grad_offset_softmax = grad_offset + K * 2;
 
-  int cache_grad_off_idx =
-      ((threadIdx.z * G + threadIdx.y) * blockDim.x + threadIdx.x) * 3;
-
   opmath_t reg_grad_offset[3] = {0.};
   for (int i = 0; i < kernel_w; ++i) {
     for (int j = 0; j < kernel_h; ++j) {
@@ -387,12 +362,9 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
                         const int block_thread, const bool softmax,
                         const int padded_offset_dim) {
 
-  constexpr int L = 1;
-
   auto kernel = backward_kernel_dcn_warp_primitive<scalar_t, d_stride,
                                                    stride_type, 1, 9, false>;
 
-  int N = height_in * width_in;
   int Q = height_out * width_out;
   int K = kernel_h * kernel_w;
 
@@ -421,8 +393,7 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
       }
       break;
     default:
-      printf("K=%ld\n", K);
-      throw std::invalid_argument("invalid kernel shape");
+      TORCH_CHECK(false, "invalid kernel shape: K=", K, " (expected 8 or 9)");
     }
   } else {
     switch (K) {
@@ -445,13 +416,14 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
       }
       break;
     default:
-      printf("K=%ld\n", K);
-      throw std::invalid_argument("invalid kernel shape");
+      TORCH_CHECK(false, "invalid kernel shape: K=", K, " (expected 8 or 9)");
     }
   }
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  assert((B * Q) % block_multiplier == 0);
+  TORCH_CHECK((B * Q) % block_multiplier == 0,
+              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
+              Q, ") % ", block_multiplier, " != 0");
 
   dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
@@ -474,14 +446,11 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
       grad_im, grad_offset, padded_offset_dim);
 
   cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("error in dcnv4_im2col_cuda: %s\n", cudaGetErrorString(err));
-    printf("launch arguments: gridDim=(%d, %d, %d), blockDim=(%d, %d, %d), "
-           "shm_size=%d\n\n",
-           num_blocks.x, num_blocks.y, num_blocks.z, num_threads.x,
-           num_threads.y, num_threads.z, shm_size);
-    AT_ASSERTM(false, "kernel launch error");
-  }
+  TORCH_CHECK(err == cudaSuccess, "dcnv4_col2im_cuda kernel launch error: ",
+              cudaGetErrorString(err), ", gridDim=(", num_blocks.x, ", ",
+              num_blocks.y, ", ", num_blocks.z, "), blockDim=(", num_threads.x,
+              ", ", num_threads.y, ", ", num_threads.z,
+              "), shm_size=", shm_size);
 }
 
 template <typename scalar_t>
@@ -500,7 +469,8 @@ void dcnv4_col2im_cuda(cudaStream_t stream,
                        const int d_stride, const int block_thread,
                        const bool softmax, const int padded_offset_dim) {
 
-  assert(D % d_stride == 0);
+  TORCH_CHECK(D % d_stride == 0, "D (", D, ") must be divisible by d_stride (",
+              d_stride, ")");
   const int size_scalar = sizeof(scalar_t);
   if (size_scalar == 2) {
     switch (d_stride) {
@@ -541,7 +511,7 @@ void dcnv4_col2im_cuda(cudaStream_t stream,
       break;
     }
   } else {
-    assert(size_scalar == 4);
+    TORCH_INTERNAL_ASSERT(size_scalar == 4, "expected fp32 scalar type");
     switch (d_stride) {
     case 1:
       _dcnv4_col2im_cuda<scalar_t, uint, 1>(

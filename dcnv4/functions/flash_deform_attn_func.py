@@ -36,12 +36,11 @@ import torch
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 
-from dcnv4 import _C
-
 try:
     from dcnv4 import triton_ops as _triton_ops
 except Exception:  # pragma: no cover - optional dependency
     _triton_ops = None
+
 
 # Shared memory capacity per GPU architecture (in bytes)
 # Used to determine optimal kernel configurations
@@ -202,7 +201,7 @@ class FlashDeformAttnFunction(Function):
                 K,
             )
         else:
-            output = _C.flash_deform_attn_forward(
+            output = torch.ops.dcnv4_C.flash_deform_attn_forward(
                 value,
                 value_spatial_shapes,
                 value_level_start_index,
@@ -253,16 +252,18 @@ class FlashDeformAttnFunction(Function):
                 ctx.K,
             )
         else:
-            grad_value, grad_sampling_loc_attn = _C.flash_deform_attn_backward(
-                value,
-                value_spatial_shapes,
-                value_level_start_index,
-                sampling_loc_attn,
-                grad_output.contiguous(),
-                ctx.im2col_step,
-                ctx.K,
-                ctx.d_stride_backward,
-                ctx.blockthread_backward,
+            grad_value, grad_sampling_loc_attn = (
+                torch.ops.dcnv4_C.flash_deform_attn_backward(
+                    value,
+                    value_spatial_shapes,
+                    value_level_start_index,
+                    sampling_loc_attn,
+                    grad_output.contiguous(),
+                    ctx.im2col_step,
+                    ctx.K,
+                    ctx.d_stride_backward,
+                    ctx.blockthread_backward,
+                )
             )
 
         return grad_value, None, None, grad_sampling_loc_attn, None, None

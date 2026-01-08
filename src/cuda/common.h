@@ -7,7 +7,7 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 
-#include <THC/THCAtomics.cuh>
+#include <ATen/cuda/Atomic.cuh>
 
 #include <ATen/OpMathType.h>
 #include <cooperative_groups.h>

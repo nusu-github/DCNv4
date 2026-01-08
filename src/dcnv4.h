@@ -20,79 +20,86 @@ at::Tensor flash_deform_attn_forward(const at::Tensor &value,
                                      const at::Tensor &spatial_shapes,
                                      const at::Tensor &level_start_index,
                                      const at::Tensor &sampling_loc_attn,
-                                     const int im2col_step, const int K,
-                                     const int d_stride,
-                                     const int block_thread) {
+                                     int64_t im2col_step, int64_t K,
+                                     int64_t d_stride, int64_t block_thread) {
   if (value.device().is_cuda()) {
 #ifdef WITH_CUDA
     return flash_deform_attn_cuda_forward(
         value, spatial_shapes, level_start_index, sampling_loc_attn,
-        im2col_step, K, d_stride, block_thread);
+        static_cast<int>(im2col_step), static_cast<int>(K),
+        static_cast<int>(d_stride), static_cast<int>(block_thread));
 #else
-    AT_ERROR("Not compiled with GPU support");
+    TORCH_CHECK(false, "Not compiled with GPU support");
 #endif
   }
-  AT_ERROR("Not implemented on the CPU");
+  TORCH_CHECK(false, "Not implemented on the CPU");
 }
 
 std::vector<at::Tensor> flash_deform_attn_backward(
     const at::Tensor &value, const at::Tensor &spatial_shapes,
     const at::Tensor &level_start_index, const at::Tensor &sampling_loc_attn,
-    const at::Tensor &grad_output, const int im2col_step, const int K,
-    const int d_stride, const int block_thread) {
+    const at::Tensor &grad_output, int64_t im2col_step, int64_t K,
+    int64_t d_stride, int64_t block_thread) {
   if (value.device().is_cuda()) {
 #ifdef WITH_CUDA
     return flash_deform_attn_cuda_backward(
         value, spatial_shapes, level_start_index, sampling_loc_attn,
-        grad_output, im2col_step, K, d_stride, block_thread);
+        grad_output, static_cast<int>(im2col_step), static_cast<int>(K),
+        static_cast<int>(d_stride), static_cast<int>(block_thread));
 #else
-    AT_ERROR("Not compiled with GPU support");
+    TORCH_CHECK(false, "Not compiled with GPU support");
 #endif
   }
-  AT_ERROR("Not implemented on the CPU");
+  TORCH_CHECK(false, "Not implemented on the CPU");
 }
 
 at::Tensor dcnv4_forward(const at::Tensor &value, const at::Tensor &p_offset,
-                         const int kernel_h, const int kernel_w,
-                         const int stride_h, const int stride_w,
-                         const int pad_h, const int pad_w, const int dilation_h,
-                         const int dilation_w, const int group,
-                         const int group_channels, const float offset_scale,
-                         const int im2col_step, const int remove_center,
-                         const int d_stride, const int block_thread,
-                         const bool softmax) {
+                         int64_t kernel_h, int64_t kernel_w, int64_t stride_h,
+                         int64_t stride_w, int64_t pad_h, int64_t pad_w,
+                         int64_t dilation_h, int64_t dilation_w, int64_t group,
+                         int64_t group_channels, double offset_scale,
+                         int64_t im2col_step, int64_t remove_center,
+                         int64_t d_stride, int64_t block_thread, bool softmax) {
   if (value.device().is_cuda()) {
 #ifdef WITH_CUDA
-    return dcnv4_cuda_forward(value, p_offset, kernel_h, kernel_w, stride_h,
-                              stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                              group, group_channels, offset_scale, im2col_step,
-                              remove_center, d_stride, block_thread, softmax);
+    return dcnv4_cuda_forward(
+        value, p_offset, static_cast<int>(kernel_h), static_cast<int>(kernel_w),
+        static_cast<int>(stride_h), static_cast<int>(stride_w),
+        static_cast<int>(pad_h), static_cast<int>(pad_w),
+        static_cast<int>(dilation_h), static_cast<int>(dilation_w),
+        static_cast<int>(group), static_cast<int>(group_channels),
+        static_cast<float>(offset_scale), static_cast<int>(im2col_step),
+        static_cast<int>(remove_center), static_cast<int>(d_stride),
+        static_cast<int>(block_thread), softmax);
 #else
-    AT_ERROR("Not compiled with GPU support");
+    TORCH_CHECK(false, "Not compiled with GPU support");
 #endif
   }
-  AT_ERROR("Not implemented on the CPU");
+  TORCH_CHECK(false, "Not implemented on the CPU");
 }
 
 std::vector<at::Tensor>
 dcnv4_backward(const at::Tensor &value, const at::Tensor &p_offset,
-               const int kernel_h, const int kernel_w, const int stride_h,
-               const int stride_w, const int pad_h, const int pad_w,
-               const int dilation_h, const int dilation_w, const int group,
-               const int group_channels, const float offset_scale,
-               const int im2col_step, const at::Tensor &grad_output,
-               const int remove_center, const int d_stride,
-               const int block_thread, const bool softmax) {
+               int64_t kernel_h, int64_t kernel_w, int64_t stride_h,
+               int64_t stride_w, int64_t pad_h, int64_t pad_w,
+               int64_t dilation_h, int64_t dilation_w, int64_t group,
+               int64_t group_channels, double offset_scale, int64_t im2col_step,
+               const at::Tensor &grad_output, int64_t remove_center,
+               int64_t d_stride, int64_t block_thread, bool softmax) {
   if (value.device().is_cuda()) {
 #ifdef WITH_CUDA
-    return dcnv4_cuda_backward(value, p_offset, kernel_h, kernel_w, stride_h,
-                               stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                               group, group_channels, offset_scale, im2col_step,
-                               grad_output, remove_center, d_stride,
-                               block_thread, softmax);
+    return dcnv4_cuda_backward(
+        value, p_offset, static_cast<int>(kernel_h), static_cast<int>(kernel_w),
+        static_cast<int>(stride_h), static_cast<int>(stride_w),
+        static_cast<int>(pad_h), static_cast<int>(pad_w),
+        static_cast<int>(dilation_h), static_cast<int>(dilation_w),
+        static_cast<int>(group), static_cast<int>(group_channels),
+        static_cast<float>(offset_scale), static_cast<int>(im2col_step),
+        grad_output, static_cast<int>(remove_center),
+        static_cast<int>(d_stride), static_cast<int>(block_thread), softmax);
 #else
-    AT_ERROR("Not compiled with GPU support");
+    TORCH_CHECK(false, "Not compiled with GPU support");
 #endif
   }
-  AT_ERROR("Not implemented on the CPU");
+  TORCH_CHECK(false, "Not implemented on the CPU");
 }

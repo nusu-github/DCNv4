@@ -1,21 +1,6 @@
-#include <algorithm>
 #include <cstdio>
-#include <cstring>
-
-#include <ATen/ATen.h>
-#include <ATen/cuda/CUDAContext.h>
-
-#include <THC/THCAtomics.cuh>
 
 #include "common.h"
-#include <ATen/ATen.h>
-#include <ATen/OpMathType.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
-#include <cuda.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void
@@ -183,9 +168,6 @@ __global__ void backward_kernel_warp_primitive(
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
 
-  const int tid =
-      (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
-  const int lane_id = tid % kWarpSize;
   const int group_per_warp = kWarpSize / blockDim.x;
   const int group_in_warp_id = (threadIdx.z * G + threadIdx.y) % group_per_warp;
   const unsigned lane_mask = ((1 << blockDim.x) - 1)
@@ -255,9 +237,6 @@ __global__ void backward_kernel_warp_primitive(
     const int level_start_id = data_level_start_index[li];
     const scalar_t *p_value_ptr = p_value + (bi * N + level_start_id) * G * D;
     opmath_t *grad_im_ptr = grad_im + (bi * N + level_start_id) * G * D;
-
-    int cache_grad_off_idx =
-        ((threadIdx.z * G + threadIdx.y) * blockDim.x + threadIdx.x) * 3;
 
     opmath_t reg_grad_offset[3] = {0.};
     for (int ki = 0; ki < K; ki++) {
@@ -334,10 +313,17 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
                                    opmath_t *grad_im, opmath_t *grad_offset,
                                    const int block_thread) {
 
-  assert(D % d_stride == 0);
+  TORCH_CHECK(D % d_stride == 0, "D (", D, ") must be divisible by d_stride (",
+              d_stride, ")");
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  assert((B * Q) % block_multiplier == 0);
+  TORCH_CHECK(block_multiplier > 0, "block_multiplier must be > 0, got ",
+              block_multiplier, " (block_thread=", block_thread, ", D=", D,
+              ", d_stride=", d_stride, ", G=", G,
+              "). Try increasing block_thread or d_stride.");
+  TORCH_CHECK((B * Q) % block_multiplier == 0,
+              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
+              Q, ") % ", block_multiplier, " != 0");
   dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
@@ -396,8 +382,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
     }
     break;
   default:
-    printf("L=%ld\n", L);
-    throw std::invalid_argument("invalid number of scales");
+    TORCH_CHECK(false, "invalid number of scales: L=", L, " (expected 1-5)");
   }
   cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                        shm_size);
@@ -407,15 +392,11 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
       N, G, D, Q, block_multiplier, grad_im, grad_offset);
 
   cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("error in flash_deformable_im2col_cuda: %s\n",
-           cudaGetErrorString(err));
-    printf("launch arguments: gridDim=(%d, %d, %d), blockDim=(%d, %d, %d), "
-           "shm_size=%d, Q=%d\n\n",
-           num_blocks.x, num_blocks.y, num_blocks.z, num_threads.x,
-           num_threads.y, num_threads.z, shm_size, Q);
-    AT_ASSERTM(false, "kernel launch error");
-  }
+  TORCH_CHECK(
+      err == cudaSuccess, "flash_deformable_col2im_cuda kernel launch error: ",
+      cudaGetErrorString(err), ", gridDim=(", num_blocks.x, ", ", num_blocks.y,
+      ", ", num_blocks.z, "), blockDim=(", num_threads.x, ", ", num_threads.y,
+      ", ", num_threads.z, "), shm_size=", shm_size, ", Q=", Q);
 }
 
 template <typename scalar_t, int K>
@@ -430,7 +411,8 @@ void flash_deformable_col2im_cuda_inner(
     const int Q, opmath_t *grad_im, opmath_t *grad_offset, const int d_stride,
     const int block_thread) {
 
-  assert(D % d_stride == 0);
+  TORCH_CHECK(D % d_stride == 0, "D (", D, ") must be divisible by d_stride (",
+              d_stride, ")");
   if (sizeof(scalar_t) == 2) {
     switch (d_stride) {
     case 1:
@@ -484,11 +466,11 @@ void flash_deformable_col2im_cuda_inner(
           B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     default:
-      printf("not supported for d_stride > 16 for fp16");
-      throw std::invalid_argument("invalid d_stride");
+      TORCH_CHECK(false, "d_stride > 16 not supported for fp16, got d_stride=",
+                  d_stride);
     }
   } else {
-    assert(sizeof(scalar_t) == 4);
+    TORCH_INTERNAL_ASSERT(sizeof(scalar_t) == 4, "expected fp32 scalar type");
     switch (d_stride) {
     case 1:
       _flash_deformable_col2im_cuda<scalar_t, scalar_t, K, 1>(
@@ -531,8 +513,8 @@ void flash_deformable_col2im_cuda_inner(
           B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     default:
-      printf("not supported for d_stride > 8 for fp32");
-      throw std::invalid_argument("invalid d_stride");
+      TORCH_CHECK(false, "d_stride > 8 not supported for fp32, got d_stride=",
+                  d_stride);
     }
   }
 }
@@ -572,7 +554,6 @@ void flash_deformable_col2im_cuda(cudaStream_t stream,
         B, N, G, D, L, Q, grad_im, grad_offset, d_stride, block_thread);
     break;
   default:
-    printf("not supported for K not in [4, 8]");
-    throw std::invalid_argument("invalid K");
+    TORCH_CHECK(false, "K must be 4 or 8, got K=", K);
   }
 }

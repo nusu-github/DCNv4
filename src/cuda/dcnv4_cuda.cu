@@ -11,7 +11,6 @@
 
 #include "cuda/dcnv4_col2im_cuda.cuh"
 #include "cuda/dcnv4_im2col_cuda.cuh"
-#include <cassert>
 #include <vector>
 
 #include <ATen/ATen.h>
@@ -31,10 +30,10 @@ at::Tensor dcnv4_cuda_forward(
     const int group, const int group_channels, const float offset_scale,
     const int im2col_step, const int remove_center, const int d_stride,
     const int block_thread, const bool softmax) {
-  AT_ASSERTM(value.is_contiguous(), "input tensor has to be contiguous");
-  AT_ASSERTM(value.type().is_cuda(), "input must be a CUDA tensor");
-  AT_ASSERTM(p_offset.is_contiguous(), "input tensor has to be contiguous");
-  AT_ASSERTM(p_offset.type().is_cuda(), "input must be a CUDA tensor");
+  TORCH_CHECK(value.is_contiguous(), "input tensor has to be contiguous");
+  TORCH_CHECK(value.is_cuda(), "input must be a CUDA tensor");
+  TORCH_CHECK(p_offset.is_contiguous(), "input tensor has to be contiguous");
+  TORCH_CHECK(p_offset.is_cuda(), "input must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int height_in = value.size(1);
@@ -43,7 +42,9 @@ at::Tensor dcnv4_cuda_forward(
   const int padded_offset_dim = p_offset.size(3);
 
   // tensor core requirement
-  assert(padded_offset_dim % 8 == 0);
+  TORCH_CHECK(padded_offset_dim % 8 == 0, "padded_offset_dim (",
+              padded_offset_dim,
+              ") must be divisible by 8 for tensor core requirements");
 
   const int height_out =
       (height_in + 2 * pad_h - (dilation_h * (kernel_h - 1) + 1)) / stride_h +
@@ -52,12 +53,11 @@ at::Tensor dcnv4_cuda_forward(
       (width_in + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
   const int im2col_step_ = std::min(batch, im2col_step);
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(", batch,
-             ") must divide im2col_step(", im2col_step_, ")");
-  AT_ASSERTM(
-      channels == (group * group_channels),
-      "Input channels and group times group channels wont match: (%d vs %d).",
-      channels, group * group_channels);
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
+              ") must divide im2col_step(", im2col_step_, ")");
+  TORCH_CHECK(channels == (group * group_channels),
+              "Input channels and group times group channels wont match: (",
+              channels, " vs ", group * group_channels, ").");
 
   auto output = at::zeros(
       {batch, height_out, width_out, group * group_channels}, value.options());
@@ -98,21 +98,23 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
                     const int im2col_step, const at::Tensor &grad_output,
                     const int remove_center, const int d_stride,
                     const int block_thread, const bool softmax) {
-  AT_ASSERTM(value.is_contiguous(), "input tensor has to be contiguous");
-  AT_ASSERTM(p_offset.is_contiguous(), "offset tensor has to be contiguous");
-  AT_ASSERTM(grad_output.is_contiguous(),
-             "grad_output tensor has to be contiguous");
+  TORCH_CHECK(value.is_contiguous(), "input tensor has to be contiguous");
+  TORCH_CHECK(p_offset.is_contiguous(), "offset tensor has to be contiguous");
+  TORCH_CHECK(grad_output.is_contiguous(),
+              "grad_output tensor has to be contiguous");
 
-  AT_ASSERTM(value.type().is_cuda(), "input must be a CUDA tensor");
-  AT_ASSERTM(p_offset.type().is_cuda(), "offset must be a CUDA tensor");
-  AT_ASSERTM(grad_output.type().is_cuda(), "grad_output must be a CUDA tensor");
+  TORCH_CHECK(value.is_cuda(), "input must be a CUDA tensor");
+  TORCH_CHECK(p_offset.is_cuda(), "offset must be a CUDA tensor");
+  TORCH_CHECK(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int height_in = value.size(1);
   const int width_in = value.size(2);
   const int channels = value.size(3);
   const int padded_offset_dim = p_offset.size(3);
-  assert(padded_offset_dim % 8 == 0);
+  TORCH_CHECK(padded_offset_dim % 8 == 0, "padded_offset_dim (",
+              padded_offset_dim,
+              ") must be divisible by 8 for tensor core requirements");
 
   const int height_out =
       (height_in + 2 * pad_h - (dilation_h * (kernel_h - 1) + 1)) / stride_h +
@@ -121,12 +123,11 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
       (width_in + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
   const int im2col_step_ = std::min(batch, im2col_step);
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(", batch,
-             ") must divide im2col_step(", im2col_step_, ")");
-  AT_ASSERTM(
-      channels == (group * group_channels),
-      "Input channels and group times group channels wont match: (%d vs %d).",
-      channels, group * group_channels);
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
+              ") must divide im2col_step(", im2col_step_, ")");
+  TORCH_CHECK(channels == (group * group_channels),
+              "Input channels and group times group channels wont match: (",
+              channels, " vs ", group * group_channels, ").");
 
   auto dtype = value.dtype();
   if (dtype == at::kHalf) {
@@ -156,14 +157,16 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
               stride_w, pad_h, pad_w, dilation_h, dilation_w, group,
               group_channels, batch_n, height_in, width_in, height_out,
               width_out, offset_scale, remove_center,
-              grad_input.data<opmath_t>() + n * im2col_step_ * per_value_size,
-              grad_offset.data<opmath_t>() + n * im2col_step_ * per_offset_size,
+              grad_input.data_ptr<opmath_t>() +
+                  n * im2col_step_ * per_value_size,
+              grad_offset.data_ptr<opmath_t>() +
+                  n * im2col_step_ * per_offset_size,
               d_stride, block_thread, softmax, padded_offset_dim);
         }));
   }
 
-  if (value.dtype() == torch::kHalf) {
-    return {grad_input.to(torch::kHalf), grad_offset.to(torch::kHalf)};
+  if (value.dtype() == at::kHalf) {
+    return {grad_input.to(at::kHalf), grad_offset.to(at::kHalf)};
   } else {
     return {grad_input, grad_offset};
   }

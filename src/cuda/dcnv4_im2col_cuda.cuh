@@ -1,21 +1,6 @@
-#include <algorithm>
 #include <cstdio>
-#include <cstring>
-
-#include <ATen/ATen.h>
-#include <ATen/cuda/CUDAContext.h>
-
-#include <THC/THCAtomics.cuh>
 
 #include "common.h"
-#include <ATen/ATen.h>
-#include <ATen/OpMathType.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
-#include <cuda.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K,
           bool softmax>
@@ -156,17 +141,12 @@ __global__ void forward_kernel_dcn_reg(
 
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
-  constexpr int li = 0;
 
   opmath_t p_mask_shm[K] = {0.};
   opmath_t p_out_shm[d_stride] = {0.};
 
   const scalar_t *p_offset_ptr =
       p_offset + (bi * Q + qi) * padded_offset_dim + gi * K * 3;
-  const int mask_length = K;
-  const int num_thread = (D / d_stride);
-  const int num_iter = mask_length / num_thread;
-  const int remainder = mask_length - num_iter * num_thread;
 
   for (int i = 0; i < K; i++) {
     p_mask_shm[i] = *(p_offset_ptr + K * 2 + i);
@@ -260,12 +240,9 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
                         const int block_thread, const int softmax,
                         const int padded_offset_dim) {
 
-  constexpr int L = 1;
-
   auto kernel =
       forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, true>;
 
-  int N = height_in * width_in;
   int Q = height_out * width_out;
   int K = kernel_h * kernel_w;
 
@@ -283,8 +260,7 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
           forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, true>;
       break;
     default:
-      printf("K=%ld\n", K);
-      throw std::invalid_argument("invalid kernel shape");
+      TORCH_CHECK(false, "invalid kernel shape: K=", K, " (expected 8 or 9)");
     }
   } else {
     switch (K) {
@@ -297,13 +273,14 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
           forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, false>;
       break;
     default:
-      printf("K=%ld\n", K);
-      throw std::invalid_argument("invalid kernel shape");
+      TORCH_CHECK(false, "invalid kernel shape: K=", K, " (expected 8 or 9)");
     }
   }
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  assert((B * Q) % block_multiplier == 0);
+  TORCH_CHECK((B * Q) % block_multiplier == 0,
+              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
+              Q, ") % ", block_multiplier, " != 0");
 
   dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
@@ -320,14 +297,11 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
       padded_offset_dim);
 
   cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    printf("error in dcnv4_im2col_cuda: %s\n", cudaGetErrorString(err));
-    printf("launch arguments: gridDim=(%d, %d, %d), blockDim=(%d, %d, %d), "
-           "shm_size=%d\n\n",
-           num_blocks.x, num_blocks.y, num_blocks.z, num_threads.x,
-           num_threads.y, num_threads.z, shm_size);
-    AT_ASSERTM(false, "kernel launch error");
-  }
+  TORCH_CHECK(err == cudaSuccess, "dcnv4_im2col_cuda kernel launch error: ",
+              cudaGetErrorString(err), ", gridDim=(", num_blocks.x, ", ",
+              num_blocks.y, ", ", num_blocks.z, "), blockDim=(", num_threads.x,
+              ", ", num_threads.y, ", ", num_threads.z,
+              "), shm_size=", shm_size);
 }
 
 template <typename scalar_t>
@@ -345,7 +319,8 @@ void dcnv4_im2col_cuda(cudaStream_t stream,
                        const int d_stride, const int block_thread,
                        const bool softmax, const int padded_offset_dim) {
 
-  assert(D % d_stride == 0);
+  TORCH_CHECK(D % d_stride == 0, "D (", D, ") must be divisible by d_stride (",
+              d_stride, ")");
   if (sizeof(scalar_t) == 2) {
     switch (d_stride) {
     case 1:
@@ -385,7 +360,7 @@ void dcnv4_im2col_cuda(cudaStream_t stream,
       break;
     }
   } else {
-    assert(sizeof(scalar_t) == 4);
+    TORCH_INTERNAL_ASSERT(sizeof(scalar_t) == 4, "expected fp32 scalar type");
     switch (d_stride) {
     case 1:
       _dcnv4_im2col_cuda<scalar_t, uint, 1>(
@@ -416,8 +391,8 @@ void dcnv4_im2col_cuda(cudaStream_t stream,
           block_thread, softmax, padded_offset_dim);
       break;
     default:
-      printf("not supported for d_stride > 8 for fp32");
-      throw std::invalid_argument("invalid d_stride");
+      TORCH_CHECK(false, "d_stride > 8 not supported for fp32, got d_stride=",
+                  d_stride);
     }
   }
 }

@@ -50,12 +50,21 @@ import gc
 import json
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 import triton.testing as triton_testing
 
-from dcnv4 import _C, triton_ops
+from dcnv4 import triton_ops
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from dcnv4 import _ops
+
+    ops: _ops = torch.ops  # type: ignore[assignment]
+else:
+    ops = torch.ops
 
 # ------------------------------
 # Utilities
@@ -193,7 +202,7 @@ def _make_dcnv4_ops(
     if backend == "CUDA":
 
         def fwd():
-            return _C.dcnv4_forward(
+            return ops.dcnv4_C.dcnv4_forward(
                 value,
                 offset,
                 config.kernel_h,
@@ -215,7 +224,7 @@ def _make_dcnv4_ops(
             )
 
         def bwd():
-            return _C.dcnv4_backward(
+            return ops.dcnv4_C.dcnv4_backward(
                 value,
                 offset,
                 config.kernel_h,
@@ -403,7 +412,7 @@ def _make_flash_ops(
     if backend == "CUDA":
 
         def fwd():
-            return _C.flash_deform_attn_forward(
+            return ops.dcnv4_C.flash_deform_attn_forward(
                 value,
                 spatial_shapes_t,
                 level_start_index,
@@ -415,7 +424,7 @@ def _make_flash_ops(
             )
 
         def bwd():
-            return _C.flash_deform_attn_backward(
+            return ops.dcnv4_C.flash_deform_attn_backward(
                 value,
                 spatial_shapes_t,
                 level_start_index,
@@ -423,7 +432,7 @@ def _make_flash_ops(
                 grad_output_3d.contiguous(),
                 64,
                 config.n_points,
-                2,
+                8,
                 128,
             )
     else:

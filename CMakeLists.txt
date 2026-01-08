@@ -34,13 +34,22 @@ target_include_directories(dcnv4_C PRIVATE
 # Definitions
 target_compile_definitions(dcnv4_C PRIVATE
   WITH_CUDA
-  TORCH_EXTENSION_NAME=_C
+  TORCH_EXTENSION_NAME=dcnv4_C
 )
 target_compile_definitions(dcnv4_C PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:
-    __CUDA_NO_HALF_OPERATORS__
+    __CUDA_NO_FP4_CONVERSION_OPERATORS__
+    __CUDA_NO_FP4_CONVERSIONS__
+    __CUDA_NO_FP6_CONVERSION_OPERATORS__
+    __CUDA_NO_FP6_CONVERSIONS__
+    __CUDA_NO_FP8_CONVERSION_OPERATORS__
+    __CUDA_NO_FP8_CONVERSIONS__
     __CUDA_NO_HALF_CONVERSIONS__
+    __CUDA_NO_HALF_OPERATORS__
     __CUDA_NO_HALF2_OPERATORS__
+    __CUDA_NO_BFLOAT16_CONVERSIONS__
+    __CUDA_NO_BFLOAT16_OPERATORS__
+    __CUDA_NO_BFLOAT162_OPERATORS__
   >
 )
 
@@ -57,6 +66,12 @@ target_compile_options(dcnv4_C PRIVATE
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Debug>:-g>
   >
+)
+
+# Link libraries
+target_link_libraries(dcnv4_C PRIVATE
+  ${TORCH_LIBRARIES}
+  CUDA::cudart
 )
 
 set_target_properties(dcnv4_C PROPERTIES

@@ -53,12 +53,22 @@ import math
 import os
 import random
 from dataclasses import asdict, dataclass
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 # Project imports
-from dcnv4 import _C, triton_ops
+from dcnv4 import triton_ops
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from dcnv4 import _ops
+
+    ops: _ops = torch.ops  # type: ignore[assignment]
+else:
+    ops = torch.ops
+
 
 # ------------------------------
 # Utilities
@@ -830,7 +840,7 @@ def run_dcnv4_case(
     # Warmup once (helps on first JIT / autotune)
     value, offset, grad_output = make_inputs(seed_base)
 
-    _ = _C.dcnv4_forward(
+    _ = ops.dcnv4_C.dcnv4_forward(
         value,
         offset,
         case.kernel_h,
@@ -880,7 +890,7 @@ def run_dcnv4_case(
         value, offset, grad_output = make_inputs(seed_base + t, pattern=pattern)
 
         # Forward
-        cuda_out = _C.dcnv4_forward(
+        cuda_out = ops.dcnv4_C.dcnv4_forward(
             value,
             offset,
             case.kernel_h,
@@ -922,7 +932,7 @@ def run_dcnv4_case(
         _update_worst(worst, "forward", _tensor_diff_stats(triton_out, cuda_out))
 
         # Backward
-        cuda_gi, cuda_go = _C.dcnv4_backward(
+        cuda_gi, cuda_go = ops.dcnv4_C.dcnv4_backward(
             value,
             offset,
             case.kernel_h,
@@ -1121,7 +1131,7 @@ def run_flash_case(
     # Warmup
     value, sampling_loc_attn, grad_output_3d = make_inputs(seed_base)
 
-    _ = _C.flash_deform_attn_forward(
+    _ = ops.dcnv4_C.flash_deform_attn_forward(
         value,
         spatial_shapes_t,
         level_start_index,
@@ -1153,7 +1163,7 @@ def run_flash_case(
         )
 
         # Forward
-        cuda_out = _C.flash_deform_attn_forward(
+        cuda_out = ops.dcnv4_C.flash_deform_attn_forward(
             value,
             spatial_shapes_t,
             level_start_index,
@@ -1181,7 +1191,7 @@ def run_flash_case(
         _update_worst(worst, "forward", _tensor_diff_stats(triton_out, cuda_out))
 
         # Backward
-        cuda_gv, cuda_go = _C.flash_deform_attn_backward(
+        cuda_gv, cuda_go = ops.dcnv4_C.flash_deform_attn_backward(
             value,
             spatial_shapes_t,
             level_start_index,
@@ -1626,7 +1636,7 @@ def run_dcnv4_tolerance_analysis(
             grad_output *= input_cfg.value_scale
 
             # Forward
-            cuda_out = _C.dcnv4_forward(
+            cuda_out = ops.dcnv4_C.dcnv4_forward(
                 value,
                 offset,
                 case.kernel_h,
@@ -1666,7 +1676,7 @@ def run_dcnv4_tolerance_analysis(
             fwd_errors.append((triton_out - cuda_out).abs().flatten())
 
             # Backward
-            cuda_gi, cuda_go = _C.dcnv4_backward(
+            cuda_gi, cuda_go = ops.dcnv4_C.dcnv4_backward(
                 value,
                 offset,
                 case.kernel_h,
@@ -1839,7 +1849,7 @@ def run_flash_tolerance_analysis(
             )
 
             # Forward
-            cuda_out = _C.flash_deform_attn_forward(
+            cuda_out = ops.dcnv4_C.flash_deform_attn_forward(
                 value,
                 spatial_shapes_t,
                 level_start_index,
@@ -1859,7 +1869,7 @@ def run_flash_tolerance_analysis(
             fwd_errors.append((triton_out.float() - cuda_out.float()).abs().flatten())
 
             # Backward
-            cuda_gv, cuda_go = _C.flash_deform_attn_backward(
+            cuda_gv, cuda_go = ops.dcnv4_C.flash_deform_attn_backward(
                 value,
                 spatial_shapes_t,
                 level_start_index,

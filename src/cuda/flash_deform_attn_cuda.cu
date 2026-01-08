@@ -30,21 +30,20 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
                                           const int im2col_step, const int K,
                                           const int d_stride,
                                           const int block_thread) {
-  AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
-  AT_ASSERTM(spatial_shapes.is_contiguous(),
-             "spatial_shapes tensor has to be contiguous");
-  AT_ASSERTM(level_start_index.is_contiguous(),
-             "level_start_index tensor has to be contiguous");
-  AT_ASSERTM(sampling_loc_attn.is_contiguous(),
-             "sampling_loc_attn tensor has to be contiguous");
+  TORCH_CHECK(value.is_contiguous(), "value tensor has to be contiguous");
+  TORCH_CHECK(spatial_shapes.is_contiguous(),
+              "spatial_shapes tensor has to be contiguous");
+  TORCH_CHECK(level_start_index.is_contiguous(),
+              "level_start_index tensor has to be contiguous");
+  TORCH_CHECK(sampling_loc_attn.is_contiguous(),
+              "sampling_loc_attn tensor has to be contiguous");
 
-  AT_ASSERTM(value.type().is_cuda(), "value must be a CUDA tensor");
-  AT_ASSERTM(spatial_shapes.type().is_cuda(),
-             "spatial_shapes must be a CUDA tensor");
-  AT_ASSERTM(level_start_index.type().is_cuda(),
-             "level_start_index must be a CUDA tensor");
-  AT_ASSERTM(sampling_loc_attn.type().is_cuda(),
-             "sampling_loc_attn must be a CUDA tensor");
+  TORCH_CHECK(value.is_cuda(), "value must be a CUDA tensor");
+  TORCH_CHECK(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
+  TORCH_CHECK(level_start_index.is_cuda(),
+              "level_start_index must be a CUDA tensor");
+  TORCH_CHECK(sampling_loc_attn.is_cuda(),
+              "sampling_loc_attn must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
@@ -56,8 +55,8 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
   const int num_point = K;
 
   const int im2col_step_ = std::min(batch, im2col_step);
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(", batch,
-             ") must divide im2col_step(", im2col_step_, ")");
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
+              ") must divide im2col_step(", im2col_step_, ")");
 
   auto output =
       at::zeros({batch, num_query, num_heads, num_channels}, value.options());
@@ -73,7 +72,8 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
           flash_deformable_im2col_cuda(
               at::cuda::getCurrentCUDAStream(),
               value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
-              spatial_shapes.data<int64_t>(), level_start_index.data<int64_t>(),
+              spatial_shapes.data_ptr<int64_t>(),
+              level_start_index.data_ptr<int64_t>(),
               sampling_loc_attn.data_ptr<scalar_t>() +
                   n * im2col_step_ * per_offset_size,
               output.data_ptr<scalar_t>() + n * im2col_step_ * per_out_size,
@@ -90,24 +90,23 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
     const at::Tensor &level_start_index, const at::Tensor &sampling_loc_attn,
     const at::Tensor &grad_output, const int im2col_step, const int K,
     const int d_stride, const int block_thread) {
-  AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
-  AT_ASSERTM(spatial_shapes.is_contiguous(),
-             "spatial_shapes tensor has to be contiguous");
-  AT_ASSERTM(level_start_index.is_contiguous(),
-             "level_start_index tensor has to be contiguous");
-  AT_ASSERTM(sampling_loc_attn.is_contiguous(),
-             "sampling_loc_attn tensor has to be contiguous");
-  AT_ASSERTM(grad_output.is_contiguous(),
-             "grad_output tensor has to be contiguous");
+  TORCH_CHECK(value.is_contiguous(), "value tensor has to be contiguous");
+  TORCH_CHECK(spatial_shapes.is_contiguous(),
+              "spatial_shapes tensor has to be contiguous");
+  TORCH_CHECK(level_start_index.is_contiguous(),
+              "level_start_index tensor has to be contiguous");
+  TORCH_CHECK(sampling_loc_attn.is_contiguous(),
+              "sampling_loc_attn tensor has to be contiguous");
+  TORCH_CHECK(grad_output.is_contiguous(),
+              "grad_output tensor has to be contiguous");
 
-  AT_ASSERTM(value.type().is_cuda(), "value must be a CUDA tensor");
-  AT_ASSERTM(spatial_shapes.type().is_cuda(),
-             "spatial_shapes must be a CUDA tensor");
-  AT_ASSERTM(level_start_index.type().is_cuda(),
-             "level_start_index must be a CUDA tensor");
-  AT_ASSERTM(sampling_loc_attn.type().is_cuda(),
-             "sampling_loc_attn must be a CUDA tensor");
-  AT_ASSERTM(grad_output.type().is_cuda(), "grad_output must be a CUDA tensor");
+  TORCH_CHECK(value.is_cuda(), "value must be a CUDA tensor");
+  TORCH_CHECK(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
+  TORCH_CHECK(level_start_index.is_cuda(),
+              "level_start_index must be a CUDA tensor");
+  TORCH_CHECK(sampling_loc_attn.is_cuda(),
+              "sampling_loc_attn must be a CUDA tensor");
+  TORCH_CHECK(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
@@ -119,8 +118,8 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
   const int num_point = K;
 
   const int im2col_step_ = std::min(batch, im2col_step);
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(", batch,
-             ") must divide im2col_step(", im2col_step_, ")");
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
+              ") must divide im2col_step(", im2col_step_, ")");
 
   auto dtype = value.dtype();
   if (dtype == at::kHalf) {
@@ -141,22 +140,25 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
           flash_deformable_col2im_cuda(
               at::cuda::getCurrentCUDAStream(),
               value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
-              spatial_shapes.data<int64_t>(), level_start_index.data<int64_t>(),
+              spatial_shapes.data_ptr<int64_t>(),
+              level_start_index.data_ptr<int64_t>(),
               sampling_loc_attn.data_ptr<scalar_t>() +
                   n * im2col_step_ * per_offset_size,
               grad_output.data_ptr<scalar_t>() +
                   n * im2col_step_ * per_out_size,
               im2col_step_, spatial_size, num_heads, num_channels, num_levels,
               num_query, num_point,
-              grad_input.data<opmath_t>() + n * im2col_step_ * per_value_size,
-              grad_offset.data<opmath_t>() + n * im2col_step_ * per_offset_size,
+              grad_input.data_ptr<opmath_t>() +
+                  n * im2col_step_ * per_value_size,
+              grad_offset.data_ptr<opmath_t>() +
+                  n * im2col_step_ * per_offset_size,
               d_stride, block_thread);
         }));
   }
 
-  if (value.dtype() == torch::kHalf) {
+  if (value.dtype() == at::kHalf) {
     grad_offset = grad_offset.clamp(-65504.0, 65504.0);
-    return {grad_input.to(torch::kHalf), grad_offset.to(torch::kHalf)};
+    return {grad_input.to(at::kHalf), grad_offset.to(at::kHalf)};
   } else {
     return {grad_input, grad_offset};
   }
