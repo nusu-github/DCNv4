@@ -1,150 +1,96 @@
-# [DCNv4](https://arxiv.org/pdf/2401.06197.pdf)
+# DCNv4
 
-## News
+A library-focused fork of [OpenGVLab/DCNv4](https://github.com/OpenGVLab/DCNv4) — Deformable Convolution v4 for PyTorch.
 
-- `Jan 15, 2024`: 🚀 Compared with InternImage, the new FlashInternImage powered with DCNv4 has faster inference speed, faster convergence, and better performance!!!
-- `Jan 15, 2024`: 🚀 "DCNv4" is released！
+This fork focuses on making DCNv4 easier to use as a standalone library. The original FlashInternImage models and downstream task configurations are not modified; for those, please refer to the [upstream repository](https://github.com/OpenGVLab/DCNv4).
 
-## Introduction
+## Installation
 
-We introduce Deformable Convolution v4 (DCNv4), a highly efficient and effective operator designed for a broad spectrum of vision applications. DCNv4 addresses the limitations of its predecessor, DCNv3, with two key enhancements: 1. removing softmax normalization in spatial aggregation to enhance its dynamic property and expressive power and 2. optimizing memory access to minimize redundant operations for speedup. These improvements result in a significantly faster convergence compared to DCNv3 and a substantial increase in processing speed, with DCNv4 achieving more than three times the forward speed.
-DCNv4 demonstrates exceptional performance across various tasks, including image classification, instance and semantic segmentation, and notably, image generation.
-When integrated into generative models like U-Net in the latent diffusion model, DCNv4 outperforms its baseline, underscoring its possibility to enhance generative models.
-In practical applications, replacing DCNv3 with DCNv4 in the InternImage model to create FlashInternImage results in up to 80\% speed increase and further performance improvement without further modifications.
-The advancements in speed and efficiency of DCNv4, combined with its robust performance across diverse vision tasks, show its potential as a foundational building block for future vision models.
+```bash
+pip install git+https://github.com/nusu-github/DCNv4.git
+```
 
-## Released Models
+### Requirements
 
-<details>
-<summary> ImageNet Image Classification </summary>
-<br>
-<div>
+- Python >= 3.8
+- PyTorch >= 2.0.0
+- CUDA toolkit (for CUDA backend)
+- Triton (optional, for Triton backend)
 
-|        name        |   pretrain   | resolution | acc@1 | #param |                                                                                download                                                                                |
-| :----------------: | :----------: | :--------: | :---: | :----: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-T | ImageNet-1K  |  224x224   | 83.6  |  30M   |     [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/flash_intern_image_t_1k_224.pth) \| [cfg](classification/configs/flash_intern_image_t_1k_224.yaml)      |
-| FlashInternImage-S | ImageNet-1K  |  224x224   | 84.4  |  50M   |     [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/flash_intern_image_s_1k_224.pth) \| [cfg](classification/configs/flash_intern_image_s_1k_224.yaml)      |
-| FlashInternImage-B | ImageNet-1K  |  224x224   | 84.9  |  97M   |     [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/flash_intern_image_b_1k_224.pth) \| [cfg](classification/configs/flash_intern_image_b_1k_224.yaml)      |
-| FlashInternImage-L | ImageNet-22K |  384x384   | 88.1  |  223M  | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/flash_internimage_l_22kto1k_384.pth) \| [cfg](classification/configs/flash_intern_image_l_22kto1k_384.yaml) |
+## Usage
 
-</div>
+```python
+import torch
+from dcnv4 import dcnv4
 
-</details>
+# Create DCNv4 layer
+layer = dcnv4(channels=64, kernel_size=3, group=4).cuda()
 
-<details>
-<summary> COCO Object Detection and Instance Segmentation </summary>
-<br>
-<div>
+# Input shape: (batch, height * width, channels)
+x = torch.randn(2, 64 * 64, 64).cuda()
 
-|      backbone      |  method   | schd | box mAP | mask mAP |                                      Config                                      |                                                                                                       Download                                                                                                        |
-| :----------------: | :-------: | :--: | :-----: | :------: | :------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-T | Mask-RCNN |  1x  |  48.0   |   43.1   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_t_fpn_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_t_fpn_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_t_fpn_1x_coco.log) |
-| FlashInternImage-T | Mask-RCNN |  3x  |  49.5   |   44.0   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_t_fpn_3x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_t_fpn_3x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_t_fpn_3x_coco.log) |
-| FlashInternImage-S | Mask-RCNN |  1x  |  49.2   |   44.0   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_s_fpn_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_s_fpn_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_s_fpn_1x_coco.log) |
-| FlashInternImage-S | Mask-RCNN |  3x  |  50.5   |   44.9   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_s_fpn_3x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_s_fpn_3x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_s_fpn_3x_coco.log) |
-| FlashInternImage-B | Mask-RCNN |  1x  |  50.1   |   44.5   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_b_fpn_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_b_fpn_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_b_fpn_1x_coco.log) |
-| FlashInternImage-B | Mask-RCNN |  3x  |  50.6   |   45.4   | [config](./detection/configs/coco/mask_rcnn_flash_intern_image_b_fpn_3x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_b_fpn_3x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask_rcnn_flash_internimage_b_fpn_3x_coco.log) |
+# Forward pass (provide spatial shape)
+output = layer(x, shape=(64, 64))
+```
 
-|      backbone      |       method       | schd | box mAP | mask mAP |                                     Config                                     |                                                                                                     Download                                                                                                      |
-| :----------------: | :----------------: | :--: | :-----: | :------: | :----------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-L | Cascade Mask R-CNN |  1x  |  55.6   |   48.2   | [config](./detection/configs/coco/cascade_flash_intern_image_l_fpn_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/cascade_flash_internimage_l_fpn_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/cascade_flash_internimage_l_fpn_1x_coco.log) |
-| FlashInternImage-L | Cascade Mask R-CNN |  3x  |  56.7   |   48.9   | [config](./detection/configs/coco/cascade_flash_intern_image_l_fpn_3x_coco.py) |                                                      [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/cascade_flash_internimage_l_fpn_3x_coco.pth)                                                      |
+### Triton Backend
 
-|      backbone      | method |     lr type      |   pretrain   | schd | box mAP |                                    Config                                     |                                                                                                      Download                                                                                                      |
-| :----------------: | :----: | :--------------: | :----------: | :--: | :-----: | :---------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-T |  DINO  |  layer-wise lr   | ImageNet-1K  |  1x  |  54.7   | [config](./detection/configs/coco/dino_4scale_flash_internimage_t_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_t_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_t_1x_coco.json) |
-| FlashInternImage-S |  DINO  |  layer-wise lr   | ImageNet-1K  |  1x  |  55.3   | [config](./detection/configs/coco/dino_4scale_flash_internimage_s_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_s_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_s_1x_coco.log)  |
-| FlashInternImage-B |  DINO  |  layer-wise lr   | ImageNet-1K  |  1x  |  56.0   | [config](./detection/configs/coco/dino_4scale_flash_internimage_b_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_b_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_b_1x_coco.log)  |
-| FlashInternImage-L |  DINO  | 0.1x backbone lr | ImageNet-22K |  1x  |  58.8   | [config](./detection/configs/coco/dino_4scale_flash_internimage_l_1x_coco.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_l_1x_coco.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/dino_4scale_flash_internimage_l_1x_coco.log)  |
+To use the Triton backend instead of CUDA:
 
-</div>
+```bash
+export DCNV4_USE_TRITON=1
+```
 
-</details>
+The Triton backend offers better portability across GPU architectures without recompilation.
 
-<details>
-<summary> ADE20K Semantic Segmentation </summary>
-<br>
-<div>
+## API Reference
 
-|      backbone      | method  | resolution | mIoU (ss/ms) |                                         Config                                         |                                                                                                         Download                                                                                                          |
-| :----------------: | :-----: | :--------: | :----------: | :------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-T | UperNet |  512x512   | 49.3 / 50.3  | [config](./segmentation/configs/ade20k/upernet_flash_internimage_t_512_160k_ade20k.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_t_512_160k_ade20k.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_t_512_160k_ade20k.log) |
-| FlashInternImage-S | UperNet |  512x512   | 50.6 / 51.6  | [config](./segmentation/configs/ade20k/upernet_flash_internimage_s_512_160k_ade20k.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_s_512_160k_ade20k.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_s_512_160k_ade20k.log) |
-| FlashInternImage-B | UperNet |  512x512   | 52.0 / 52.6  | [config](./segmentation/configs/ade20k/upernet_flash_internimage_b_512_160k_ade20k.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_b_512_160k_ade20k.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_s_512_160k_ade20k.log) |
-| FlashInternImage-L | UperNet |  640x640   | 55.6 / 56.0  | [config](./segmentation/configs/ade20k/upernet_flash_internimage_l_640_160k_ade20k.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_l_640_160k_ade20k.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/upernet_flash_internimage_l_640_160k_ade20k.log) |
+### `dcnv4`
 
-|      backbone      |   method    | resolution | mIoU (ss) |                                            Config                                             |                                                                                                                Download                                                                                                                 |
-| :----------------: | :---------: | :--------: | :-------: | :-------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| FlashInternImage-T | Mask2Former |  512x512   |   51.2    | [config](./segmentation/configs/ade20k/mask2former_flash_internimage_t_512_160k_ade20k_ss.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_t_512_160k_ade20k_ss.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_t_512_160k_ade20k_ss.log) |
-| FlashInternImage-S | Mask2Former |  640x640   |   52.6    | [config](./segmentation/configs/ade20k/mask2former_flash_internimage_s_640_160k_ade20k_ss.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_s_640_160k_ade20k_ss.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_s_640_160k_ade20k_ss.log) |
-| FlashInternImage-B | Mask2Former |  640x640   |   53.4    | [config](./segmentation/configs/ade20k/mask2former_flash_internimage_b_640_160k_ade20k_ss.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_b_640_160k_ade20k_ss.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_b_640_160k_ade20k_ss.log) |
-| FlashInternImage-L | Mask2Former |  640x640   |   56.7    | [config](./segmentation/configs/ade20k/mask2former_flash_internimage_l_640_160k_ade20k_ss.py) | [ckpt](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_l_640_160k_ade20k_ss.pth) \| [log](https://huggingface.co/OpenGVLab/DCNv4/resolve/main/mask2former_flash_internimage_l_640_160k_ade20k_ss.log) |
+Main DCNv4 module for use as a drop-in replacement for convolutions.
 
-</div>
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `channels` | int | — | Number of input/output channels |
+| `kernel_size` | int | 3 | Size of the deformable kernel |
+| `stride` | int | 1 | Stride of the convolution |
+| `pad` | int | 1 | Padding size |
+| `dilation` | int | 1 | Dilation rate |
+| `group` | int | 4 | Number of groups for grouped convolution |
+| `offset_scale` | float | 1.0 | Scaling factor for offsets |
+| `dw_kernel_size` | int \| None | None | Depthwise convolution kernel size |
+| `center_feature_scale` | bool | False | Enable center feature scaling |
 
-</details>
+### `FlashDeformAttn`
 
-## Citations
+Multi-scale deformable attention module with optimized kernels.
 
-If this work is helpful for your research, please consider citing the following BibTeX entry.
+## About DCNv4
+
+DCNv4 introduces two key improvements over DCNv3:
+
+1. **Unbounded aggregation weights**: Removes softmax normalization, allowing dynamic weights similar to standard convolutions
+2. **Optimized memory access**: Eliminates redundant operations, achieving 3x+ speedup over DCNv3
+
+For details, see the paper: [Efficient Deformable ConvNets: Rethinking Dynamic and Sparse Operator for Vision Applications](https://arxiv.org/abs/2401.06197)
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+## Citation
+
+If you use DCNv4 in your research, please cite the original paper:
 
 ```bibtex
-
 @article{xiong2024efficient,
-      title={Efficient Deformable ConvNets: Rethinking Dynamic and Sparse Operator for Vision Applications},
-      author={Yuwen Xiong and Zhiqi Li and Yuntao Chen and Feng Wang and Xizhou Zhu and Jiapeng Luo and Wenhai Wang and Tong Lu and Hongsheng Li and Yu Qiao and Lewei Lu and Jie Zhou and Jifeng Dai},
-      journal={arXiv preprint arXiv:2401.06197},
-      year={2024}
-}
-
-@article{wang2022internimage,
-  title={InternImage: Exploring Large-Scale Vision Foundation Models with Deformable Convolutions},
-  author={Wang, Wenhai and Dai, Jifeng and Chen, Zhe and Huang, Zhenhang and Li, Zhiqi and Zhu, Xizhou and Hu, Xiaowei and Lu, Tong and Lu, Lewei and Li, Hongsheng and others},
-  journal={arXiv preprint arXiv:2211.05778},
-  year={2022}
-}
-
-@inproceedings{zhu2022uni,
-  title={Uni-perceiver: Pre-training unified architecture for generic perception for zero-shot and few-shot tasks},
-  author={Zhu, Xizhou and Zhu, Jinguo and Li, Hao and Wu, Xiaoshi and Li, Hongsheng and Wang, Xiaohua and Dai, Jifeng},
-  booktitle={CVPR},
-  pages={16804--16815},
-  year={2022}
-}
-
-@article{zhu2022uni,
-  title={Uni-perceiver-moe: Learning sparse generalist models with conditional moes},
-  author={Zhu, Jinguo and Zhu, Xizhou and Wang, Wenhai and Wang, Xiaohua and Li, Hongsheng and Wang, Xiaogang and Dai, Jifeng},
-  journal={arXiv preprint arXiv:2206.04674},
-  year={2022}
-}
-
-@article{li2022uni,
-  title={Uni-Perceiver v2: A Generalist Model for Large-Scale Vision and Vision-Language Tasks},
-  author={Li, Hao and Zhu, Jinguo and Jiang, Xiaohu and Zhu, Xizhou and Li, Hongsheng and Yuan, Chun and Wang, Xiaohua and Qiao, Yu and Wang, Xiaogang and Wang, Wenhai and others},
-  journal={arXiv preprint arXiv:2211.09808},
-  year={2022}
-}
-
-@article{yang2022bevformer,
-  title={BEVFormer v2: Adapting Modern Image Backbones to Bird's-Eye-View Recognition via Perspective Supervision},
-  author={Yang, Chenyu and Chen, Yuntao and Tian, Hao and Tao, Chenxin and Zhu, Xizhou and Zhang, Zhaoxiang and Huang, Gao and Li, Hongyang and Qiao, Yu and Lu, Lewei and others},
-  journal={arXiv preprint arXiv:2211.10439},
-  year={2022}
-}
-
-@article{su2022towards,
-  title={Towards All-in-one Pre-training via Maximizing Multi-modal Mutual Information},
-  author={Su, Weijie and Zhu, Xizhou and Tao, Chenxin and Lu, Lewei and Li, Bin and Huang, Gao and Qiao, Yu and Wang, Xiaogang and Zhou, Jie and Dai, Jifeng},
-  journal={arXiv preprint arXiv:2211.09807},
-  year={2022}
-}
-
-@inproceedings{li2022bevformer,
-  title={Bevformer: Learning bird’s-eye-view representation from multi-camera images via spatiotemporal transformers},
-  author={Li, Zhiqi and Wang, Wenhai and Li, Hongyang and Xie, Enze and Sima, Chonghao and Lu, Tong and Qiao, Yu and Dai, Jifeng},
-  booktitle={ECCV},
-  pages={1--18},
-  year={2022},
+  title={Efficient Deformable ConvNets: Rethinking Dynamic and Sparse Operator for Vision Applications},
+  author={Yuwen Xiong and Zhiqi Li and Yuntao Chen and Feng Wang and Xizhou Zhu and Jiapeng Luo and Wenhai Wang and Tong Lu and Hongsheng Li and Yu Qiao and Lewei Lu and Jie Zhou and Jifeng Dai},
+  journal={arXiv preprint arXiv:2401.06197},
+  year={2024}
 }
 ```
+
+## Acknowledgments
+
+This fork is based on the official [DCNv4 implementation](https://github.com/OpenGVLab/DCNv4) by OpenGVLab.
