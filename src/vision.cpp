@@ -133,5 +133,3 @@ TORCH_LIBRARY_IMPL_EXPAND(TORCH_EXTENSION_NAME, Meta, m) {
   m.impl("dcnv4_forward", &dcnv4_forward_meta);
   m.impl("dcnv4_backward", &dcnv4_backward_meta);
 }
-
-REGISTER_EXTENSION(TORCH_EXTENSION_NAME)
