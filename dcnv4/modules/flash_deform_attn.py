@@ -36,7 +36,7 @@ import torch
 from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
 
-from dcnv4.functions import FlashDeformAttnFunction
+from dcnv4.functions.flash_deform_attn_func import flash_deform_attn
 
 
 def _is_power_of_2(n):
@@ -251,12 +251,16 @@ class FlashDeformAttn(nn.Module):
         sampling_locations = sampling_locations.flatten(-3).half()
         sampling_loc_attn = torch.cat([sampling_locations, attention_weights], dim=-1)
 
-        output = FlashDeformAttnFunction.apply(
+        im2col_step = self.im2col_step
+        if N % im2col_step != 0:
+            im2col_step = N
+
+        output = flash_deform_attn(
             value,
             input_spatial_shapes,
             input_level_start_index,
             sampling_loc_attn,
-            self.im2col_step,
+            im2col_step,
             self.n_points,
         )
         return self.output_proj(output)

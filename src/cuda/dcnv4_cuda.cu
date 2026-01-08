@@ -59,7 +59,7 @@ at::Tensor dcnv4_cuda_forward(
               "Input channels and group times group channels wont match: (",
               channels, " vs ", group * group_channels, ").");
 
-  auto output = at::zeros(
+  auto output = torch::zeros(
       {batch, height_out, width_out, group * group_channels}, value.options());
 
   const int batch_n = im2col_step_;
@@ -134,8 +134,8 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
     dtype = at::kFloat;
   }
 
-  auto grad_input = at::zeros_like(value, dtype);
-  auto grad_offset = at::zeros_like(p_offset, dtype);
+  auto grad_input = torch::zeros_like(value, dtype);
+  auto grad_offset = torch::zeros_like(p_offset, dtype);
 
   const int batch_n = im2col_step_;
   auto grad_output_n = grad_output.view(

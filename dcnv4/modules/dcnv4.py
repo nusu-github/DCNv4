@@ -45,7 +45,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
 
-from dcnv4.functions import DCNv4Function
+from dcnv4.functions.dcnv4_func import dcnv4_forward
 
 
 class CenterFeatureScaleModule(nn.Module):
@@ -165,7 +165,12 @@ class dcnv4(nn.Module):
         _d_per_group = channels // group
 
         # you'd better set _d_per_group to a power of 2 which is more efficient in our CUDA implementation
-        assert _d_per_group % 16 == 0
+        if _d_per_group % 16 != 0:
+            msg = (
+                f"channels per group must be divisible by 16 for CUDA efficiency, "
+                f"but got {_d_per_group} (channels={channels}, group={group})"
+            )
+            raise ValueError(msg)
 
         self.offset_scale = offset_scale
         self.channels = channels
@@ -219,6 +224,16 @@ class dcnv4(nn.Module):
         # Zero-init offsets: start with regular grid sampling
         constant_(self.offset_mask.weight.data, 0.0)
         constant_(self.offset_mask.bias.data, 0.0)
+
+        # Init modulation weights to 0.5 to avoid zero gradient at initialization
+        points_per_group = self.kernel_size * self.kernel_size - self.remove_center
+        for g in range(self.group):
+            # The layout is [offsets_x, offsets_y, weights] per group
+            # Offsets take 2 * points_per_group, weights take points_per_group
+            weight_start = g * points_per_group * 3 + 2 * points_per_group
+            weight_end = weight_start + points_per_group
+            constant_(self.offset_mask.bias.data[weight_start:weight_end], 0.5)
+
         if not self.without_pointwise:
             xavier_uniform_(self.value_proj.weight.data)
             constant_(self.value_proj.bias.data, 0.0)
@@ -272,7 +287,11 @@ class dcnv4(nn.Module):
 
         x_proj = x
 
-        x = DCNv4Function.apply(
+        im2col_step = 256
+        if N % im2col_step != 0:
+            im2col_step = N
+
+        x = dcnv4_forward(
             x,
             offset_mask,
             self.kernel_size,
@@ -286,7 +305,7 @@ class dcnv4(nn.Module):
             self.group,
             self.group_channels,
             self.offset_scale,
-            256,
+            im2col_step,
             self.remove_center,
         )
 

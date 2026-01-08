@@ -58,8 +58,8 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
   TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
               ") must divide im2col_step(", im2col_step_, ")");
 
-  auto output =
-      at::zeros({batch, num_query, num_heads, num_channels}, value.options());
+  auto output = torch::zeros({batch, num_query, num_heads, num_channels},
+                             value.options());
 
   auto per_value_size = spatial_size * num_heads * num_channels;
   auto per_offset_size = num_query * num_heads * num_levels * num_point * 3;
@@ -126,8 +126,8 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
     dtype = at::kFloat;
   }
 
-  auto grad_input = at::zeros_like(value, dtype);
-  auto grad_offset = at::zeros_like(sampling_loc_attn, dtype);
+  auto grad_input = torch::zeros_like(value, dtype);
+  auto grad_offset = torch::zeros_like(sampling_loc_attn, dtype);
 
   auto per_value_size = spatial_size * num_heads * num_channels;
   auto per_offset_size = num_query * num_heads * num_levels * num_point * 3;

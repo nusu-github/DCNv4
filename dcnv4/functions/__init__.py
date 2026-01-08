@@ -29,7 +29,7 @@ Backend Selection:
 
 """
 
-from .dcnv4_func import DCNv4Function
-from .flash_deform_attn_func import FlashDeformAttnFunction
+from .dcnv4_func import dcnv4_forward
+from .flash_deform_attn_func import flash_deform_attn
 
-__all__ = ["DCNv4Function", "FlashDeformAttnFunction"]
+__all__ = ["dcnv4_forward", "flash_deform_attn"]

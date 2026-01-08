@@ -15,3 +15,6 @@ build-backend = "scikit_build_core.build"
 [tool.scikit-build]
 cmake.build-type = "Release"
 wheel.packages = ["dcnv4"]
+minimum-version = "0.11"
+build-dir = "build/{wheel_tag}"
+strict-config = true
