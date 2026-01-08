@@ -190,13 +190,176 @@ def _flash_deform_fwd_kernel(
     prune_configs_by={"early_config_prune": _prune_configs_flash},
 )
 @triton.jit
-def _flash_deform_bwd_kernel(
-    value_ptr,
+def _flash_deform_bwd_input_kernel(
     spatial_shapes_ptr,
     level_start_ptr,
     offset_ptr,
     grad_out_ptr,
     grad_input_ptr,
+    N,
+    Q,
+    G,
+    D,
+    stride_ob,
+    stride_oq,
+    stride_og,
+    stride_od,
+    stride_gob,
+    stride_goq,
+    stride_gog,
+    stride_god,
+    stride_gib,
+    stride_gin,
+    stride_gig,
+    stride_gid,
+    L: tl.constexpr,
+    K: tl.constexpr,
+    K_TOTAL: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
+) -> None:
+    pid_q = tl.program_id(0)
+    pid_gd = tl.program_id(1)
+    b = tl.program_id(2)
+
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
+    offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
+    mask_q = offs_q < Q
+
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
+    mask_c = d < D
+    c = g * D + d
+
+    mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
+    offset_base = offset_ptr + b * stride_ob + offs_q * stride_oq + g * stride_og
+
+    mask_k = mask_idx < K_TOTAL
+    mask_qk = mask_q[:, None] & mask_k[None, :]
+    ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+    mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+    mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
+    maxv = tl.max(mask_vals, axis=1)
+    expv = tl.exp(mask_vals - maxv[:, None])
+    denom = tl.sum(expv, axis=1)
+    mask_vals = expv / denom[:, None]
+
+    go_ptrs = (
+        grad_out_ptr
+        + b * stride_gob
+        + offs_q[:, None] * stride_goq
+        + c[None, :] * stride_god
+    )
+    go = tl.load(go_ptrs, mask=(mask_q[:, None] & mask_c[None, :]), other=0.0).to(
+        tl.float32,
+    )
+
+    point_idx = 0
+    for li in range(L):
+        spatial_h = tl.load(spatial_shapes_ptr + li * 2 + 0)
+        spatial_w = tl.load(spatial_shapes_ptr + li * 2 + 1)
+        level_start = tl.load(level_start_ptr + li)
+
+        for _ki in range(K):
+            ptr_x = offset_base + 2 * point_idx
+            ptr_y = offset_base + 2 * point_idx + 1
+            off_x = tl.load(ptr_x, mask=mask_q, other=0.0).to(tl.float32)
+            off_y = tl.load(ptr_y, mask=mask_q, other=0.0).to(tl.float32)
+
+            mask_now = (mask_idx == point_idx)[None, :]
+            attn = tl.sum(mask_vals * mask_now, axis=1)
+
+            h_im = off_y * spatial_h - 0.5
+            w_im = off_x * spatial_w - 0.5
+            valid = (h_im > -1) & (w_im > -1) & (h_im < spatial_h) & (w_im < spatial_w)
+            valid = valid & mask_q
+
+            h_low = tl.floor(h_im)
+            w_low = tl.floor(w_im)
+            h_low_i = h_low.to(tl.int32)
+            w_low_i = w_low.to(tl.int32)
+            h_high_i = h_low_i + 1
+            w_high_i = w_low_i + 1
+
+            lh = h_im - h_low
+            lw = w_im - w_low
+            hh = 1.0 - lh
+            hw = 1.0 - lw
+
+            w1 = hh * hw
+            w2 = hh * lw
+            w3 = lh * hw
+            w4 = lh * lw
+
+            check_h_low = (h_low_i >= 0) & (h_low_i < spatial_h)
+            check_w_low = (w_low_i >= 0) & (w_low_i < spatial_w)
+            check_h_high = (h_high_i >= 0) & (h_high_i < spatial_h)
+            check_w_high = (w_high_i >= 0) & (w_high_i < spatial_w)
+
+            valid_bc = valid[:, None]
+            mask_c_bc = mask_c[None, :]
+
+            mask1 = mask_c_bc & valid_bc & (check_h_low[:, None] & check_w_low[:, None])
+            mask2 = (
+                mask_c_bc & valid_bc & (check_h_low[:, None] & check_w_high[:, None])
+            )
+            mask3 = (
+                mask_c_bc & valid_bc & (check_h_high[:, None] & check_w_low[:, None])
+            )
+            mask4 = (
+                mask_c_bc & valid_bc & (check_h_high[:, None] & check_w_high[:, None])
+            )
+
+            base_grad_in = (
+                grad_input_ptr
+                + b * stride_gib
+                + (level_start + 0) * stride_gin
+                + g * stride_gig
+                + d * stride_gid
+            )
+            stride_gih = spatial_w * stride_gin
+            stride_giw = stride_gin
+            offset_base_grad = h_low_i * stride_gih + w_low_i * stride_giw
+            g_ptr1 = base_grad_in[None, :] + offset_base_grad[:, None]
+
+            tl.atomic_add(g_ptr1, go * attn[:, None] * w1[:, None], mask=mask1)
+            tl.atomic_add(
+                g_ptr1 + stride_giw,
+                go * attn[:, None] * w2[:, None],
+                mask=mask2,
+            )
+            tl.atomic_add(
+                g_ptr1 + stride_gih,
+                go * attn[:, None] * w3[:, None],
+                mask=mask3,
+            )
+            tl.atomic_add(
+                g_ptr1 + stride_gih + stride_giw,
+                go * attn[:, None] * w4[:, None],
+                mask=mask4,
+            )
+
+            point_idx += 1
+
+
+@triton.autotune(
+    configs=_get_autotune_config_bwd(),
+    key=["G", "D"],
+    prune_configs_by={"early_config_prune": _prune_configs_flash},
+)
+@triton.jit
+def _flash_deform_bwd_offset_kernel(
+    value_ptr,
+    spatial_shapes_ptr,
+    level_start_ptr,
+    offset_ptr,
+    grad_out_ptr,
     grad_offset_ptr,
     grad_attn_ptr,
     N,
@@ -215,10 +378,6 @@ def _flash_deform_bwd_kernel(
     stride_goq,
     stride_gog,
     stride_god,
-    stride_gib,
-    stride_gin,
-    stride_gig,
-    stride_gid,
     stride_gobf,
     stride_goqf,
     stride_gogf,
@@ -404,35 +563,6 @@ def _flash_deform_bwd_kernel(
             else:
                 tl.atomic_add(ptr_grad_w, grad_off_w_val, mask=mask_q)
                 tl.atomic_add(ptr_grad_h, grad_off_h_val, mask=mask_q)
-
-            base_grad_in = (
-                grad_input_ptr
-                + b * stride_gib
-                + (level_start + 0) * stride_gin
-                + g * stride_gig
-                + d * stride_gid
-            )
-            stride_gih = spatial_w * stride_gin
-            stride_giw = stride_gin
-            offset_base_grad = h_low_i * stride_gih + w_low_i * stride_giw
-            g_ptr1 = base_grad_in[None, :] + offset_base_grad[:, None]
-
-            tl.atomic_add(g_ptr1, go * attn[:, None] * w1[:, None], mask=mask1)
-            tl.atomic_add(
-                g_ptr1 + stride_giw,
-                go * attn[:, None] * w2[:, None],
-                mask=mask2,
-            )
-            tl.atomic_add(
-                g_ptr1 + stride_gih,
-                go * attn[:, None] * w3[:, None],
-                mask=mask3,
-            )
-            tl.atomic_add(
-                g_ptr1 + stride_gih + stride_giw,
-                go * attn[:, None] * w4[:, None],
-                mask=mask4,
-            )
 
             point_idx += 1
 
@@ -626,13 +756,42 @@ def flash_deform_attn_backward(
             B,
         )
 
-    _flash_deform_bwd_kernel[grid](
-        value,
+    _flash_deform_bwd_input_kernel[grid](
         spatial_shapes,
         level_start_index,
         sampling_loc_attn,
         grad_output,
         grad_input,
+        N,
+        Q,
+        G,
+        D,
+        sampling_loc_attn.stride(0),
+        sampling_loc_attn.stride(1),
+        sampling_loc_attn.stride(2),
+        sampling_loc_attn.stride(3),
+        grad_output.stride(0),
+        grad_output.stride(1),
+        grad_output.stride(2),
+        grad_output.stride(3),
+        grad_input.stride(0),
+        grad_input.stride(1),
+        grad_input.stride(2),
+        grad_input.stride(3),
+        L=L,
+        K=K,
+        K_TOTAL=k_total,
+        BLOCK_K=BLOCK_K,
+        BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
+    )
+
+    _flash_deform_bwd_offset_kernel[grid](
+        value,
+        spatial_shapes,
+        level_start_index,
+        sampling_loc_attn,
+        grad_output,
         grad_offset,
         grad_attn if grad_attn is not None else grad_offset,
         N,
@@ -651,10 +810,6 @@ def flash_deform_attn_backward(
         grad_output.stride(1),
         grad_output.stride(2),
         grad_output.stride(3),
-        grad_input.stride(0),
-        grad_input.stride(1),
-        grad_input.stride(2),
-        grad_input.stride(3),
         grad_offset.stride(0),
         grad_offset.stride(1),
         grad_offset.stride(2),

@@ -238,11 +238,208 @@ def _dcnv4_fwd_kernel(
     prune_configs_by={"early_config_prune": _prune_configs_dcnv4},
 )
 @triton.jit
-def _dcnv4_bwd_kernel(
-    value_ptr,
+def _dcnv4_bwd_input_kernel(
     offset_ptr,
     grad_out_ptr,
     grad_input_ptr,
+    H_in,
+    W_in,
+    H_out,
+    W_out,
+    G,
+    D,
+    stride_ob,
+    stride_oh,
+    stride_ow,
+    stride_oc,
+    stride_gob,
+    stride_goh,
+    stride_gow,
+    stride_goc,
+    stride_gib,
+    stride_gih,
+    stride_giw,
+    stride_gic,
+    stride_h,
+    stride_w,
+    pad_h,
+    pad_w,
+    dilation_h,
+    dilation_w,
+    offset_scale,
+    KERNEL_H: tl.constexpr,
+    KERNEL_W: tl.constexpr,
+    K_TOTAL: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    REMOVE_CENTER: tl.constexpr,
+    SOFTMAX: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    BLOCK_Q: tl.constexpr,
+    NUM_D_BLOCKS: tl.constexpr,
+) -> None:
+    pid_q = tl.program_id(0)
+    pid_gd = tl.program_id(1)
+    b = tl.program_id(2)
+
+    g = pid_gd // NUM_D_BLOCKS
+    pid_d = pid_gd - g * NUM_D_BLOCKS
+
+    offs_q = pid_q * BLOCK_Q + tl.arange(0, BLOCK_Q)
+    tl.max_contiguous(offs_q, BLOCK_Q)
+    mask_q = offs_q < (H_out * W_out)
+
+    h_out = offs_q // W_out
+    w_out = offs_q % W_out
+
+    d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+    tl.max_contiguous(d, BLOCK_D)
+    mask_c = d < D
+    c = g * D + d
+
+    mask_idx = tl.arange(0, BLOCK_K)
+    tl.max_contiguous(mask_idx, BLOCK_K)
+    offset_base = offset_ptr + b * stride_ob + offs_q * stride_ow + g * K_TOTAL * 3
+
+    # Load masks for softmax
+    mask_vals = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
+    if SOFTMAX:
+        mask_k = mask_idx < K_TOTAL
+        mask_qk = mask_q[:, None] & mask_k[None, :]
+        ptr_mask = offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
+        mask_vals = tl.load(ptr_mask, mask=mask_qk, other=0.0).to(tl.float32)
+        mask_vals = tl.where(mask_qk, mask_vals, -1.0e10)
+        maxv = tl.max(mask_vals, axis=1)
+        expv = tl.exp(mask_vals - maxv[:, None])
+        denom = tl.sum(expv, axis=1)
+        mask_vals = expv / denom[:, None]
+
+    half_w = (dilation_w * (KERNEL_W - 1)) // 2
+    half_h = (dilation_h * (KERNEL_H - 1)) // 2
+    p0_w = half_w - pad_w + w_out * stride_w
+    p0_h = half_h - pad_h + h_out * stride_h
+    p0_w = p0_w.to(tl.float32)
+    p0_h = p0_h.to(tl.float32)
+    p0_w_ = p0_w - half_w * offset_scale
+    p0_h_ = p0_h - half_h * offset_scale
+
+    center_h = KERNEL_H // 2
+    center_w = KERNEL_W // 2
+
+    go_ptrs = (
+        grad_out_ptr
+        + b * stride_gob
+        + h_out[:, None] * stride_goh
+        + w_out[:, None] * stride_gow
+        + c[None, :] * stride_goc
+    )
+    # [BLOCK_Q, BLOCK_D]
+    go = tl.load(go_ptrs, mask=(mask_q[:, None] & mask_c[None, :]), other=0.0).to(
+        tl.float32,
+    )
+
+    point_idx = 0
+    for i in range(KERNEL_W):
+        for j in range(KERNEL_H):
+            if (REMOVE_CENTER == 0) or (i != center_w or j != center_h):
+                # Load offsets just in time
+                ptr_x = offset_base + 2 * point_idx
+                ptr_y = offset_base + 2 * point_idx + 1
+                off_x = tl.load(ptr_x, mask=mask_q, other=0.0).to(tl.float32)
+                off_y = tl.load(ptr_y, mask=mask_q, other=0.0).to(tl.float32)
+
+                attn = tl.zeros([BLOCK_Q], dtype=tl.float32)
+                if SOFTMAX:
+                    mask_now = (mask_idx == point_idx)[None, :]
+                    attn = tl.sum(mask_vals * mask_now, axis=1)
+                else:
+                    ptr_mask_val = offset_base + 2 * K_TOTAL + point_idx
+                    attn = tl.load(ptr_mask_val, mask=mask_q, other=0.0).to(tl.float32)
+
+                w_im = p0_w_ + (i * dilation_w + off_x) * offset_scale
+                h_im = p0_h_ + (j * dilation_h + off_y) * offset_scale
+
+                valid = (h_im > -1) & (w_im > -1) & (h_im < H_in) & (w_im < W_in)
+                valid = valid & mask_q
+
+                h_low = tl.floor(h_im)
+                w_low = tl.floor(w_im)
+                h_low_i = h_low.to(tl.int32)
+                w_low_i = w_low.to(tl.int32)
+                h_high_i = h_low_i + 1
+                w_high_i = w_low_i + 1
+
+                lh = h_im - h_low
+                lw = w_im - w_low
+                hh = 1.0 - lh
+                hw = 1.0 - lw
+
+                w1 = hh * hw
+                w2 = hh * lw
+                w3 = lh * hw
+                w4 = lh * lw
+
+                check_h_low = (h_low_i >= 0) & (h_low_i < H_in)
+                check_w_low = (w_low_i >= 0) & (w_low_i < W_in)
+                check_h_high = (h_high_i >= 0) & (h_high_i < H_in)
+                check_w_high = (w_high_i >= 0) & (w_high_i < W_in)
+
+                valid_bc = valid[:, None]
+                mask_c_bc = mask_c[None, :]
+
+                mask1 = (
+                    mask_c_bc & valid_bc & (check_h_low[:, None] & check_w_low[:, None])
+                )
+                mask2 = (
+                    mask_c_bc
+                    & valid_bc
+                    & (check_h_low[:, None] & check_w_high[:, None])
+                )
+                mask3 = (
+                    mask_c_bc
+                    & valid_bc
+                    & (check_h_high[:, None] & check_w_low[:, None])
+                )
+                mask4 = (
+                    mask_c_bc
+                    & valid_bc
+                    & (check_h_high[:, None] & check_w_high[:, None])
+                )
+
+                # Atomic add to grad_input
+                base_grad_in = grad_input_ptr + b * stride_gib + c * stride_gic
+                offset_base_grad = h_low_i * stride_gih + w_low_i * stride_giw
+                g_ptr1 = base_grad_in[None, :] + offset_base_grad[:, None]
+
+                tl.atomic_add(g_ptr1, go * attn[:, None] * w1[:, None], mask=mask1)
+                tl.atomic_add(
+                    g_ptr1 + stride_giw,
+                    go * attn[:, None] * w2[:, None],
+                    mask=mask2,
+                )
+                tl.atomic_add(
+                    g_ptr1 + stride_gih,
+                    go * attn[:, None] * w3[:, None],
+                    mask=mask3,
+                )
+                tl.atomic_add(
+                    g_ptr1 + stride_gih + stride_giw,
+                    go * attn[:, None] * w4[:, None],
+                    mask=mask4,
+                )
+
+                point_idx += 1
+
+
+@triton.autotune(
+    configs=_get_autotune_config_bwd(),
+    key=["G", "D"],
+    prune_configs_by={"early_config_prune": _prune_configs_dcnv4},
+)
+@triton.jit
+def _dcnv4_bwd_offset_kernel(
+    value_ptr,
+    offset_ptr,
+    grad_out_ptr,
     grad_offset_ptr,
     grad_attn_ptr,
     H_in,
@@ -263,10 +460,6 @@ def _dcnv4_bwd_kernel(
     stride_goh,
     stride_gow,
     stride_goc,
-    stride_gib,
-    stride_gih,
-    stride_giw,
-    stride_gic,
     stride_gobf,
     stride_gohf,
     stride_gowf,
@@ -346,7 +539,6 @@ def _dcnv4_bwd_kernel(
     center_w = KERNEL_W // 2
 
     if SOFTMAX:
-        # [BLOCK_Q, BLOCK_K] to store gradients for mask
         grad_attn = tl.zeros([BLOCK_Q, BLOCK_K], dtype=tl.float32)
 
     go_ptrs = (
@@ -356,7 +548,6 @@ def _dcnv4_bwd_kernel(
         + w_out[:, None] * stride_gow
         + c[None, :] * stride_goc
     )
-    # [BLOCK_Q, BLOCK_D]
     go = tl.load(go_ptrs, mask=(mask_q[:, None] & mask_c[None, :]), other=0.0).to(
         tl.float32,
     )
@@ -365,7 +556,6 @@ def _dcnv4_bwd_kernel(
     for i in range(KERNEL_W):
         for j in range(KERNEL_H):
             if (REMOVE_CENTER == 0) or (i != center_w or j != center_h):
-                # Load offsets just in time
                 ptr_x = offset_base + 2 * point_idx
                 ptr_y = offset_base + 2 * point_idx + 1
                 off_x = tl.load(ptr_x, mask=mask_q, other=0.0).to(tl.float32)
@@ -454,13 +644,8 @@ def _dcnv4_bwd_kernel(
                     tl.fma(v2, w2[:, None], tl.fma(v3, w3[:, None], v4 * w4[:, None])),
                 )
 
-                # grad_attn_val for current k [BLOCK_Q]
                 grad_attn_val = tl.sum(go * interp, axis=1)
 
-                # Store into grad_attn [BLOCK_Q, BLOCK_K]
-                # We need to write to column point_idx
-                # We can accumulate into a register tensor
-                # Using mask to update only current column
                 if SOFTMAX:
                     if WRITE_GRAD_ATTN:
                         ptr_grad_attn = (
@@ -501,7 +686,6 @@ def _dcnv4_bwd_kernel(
                 grad_off_w_val = offset_scale * attn * tl.sum(go * grad_w, axis=1)
                 grad_off_h_val = offset_scale * attn * tl.sum(go * grad_h, axis=1)
 
-                # Store grad_offset (x/y). Use atomic add when multiple D blocks contribute.
                 ptr_grad_w = grad_offset_base + point_idx * 2
                 ptr_grad_h = grad_offset_base + point_idx * 2 + 1
                 if NUM_D_BLOCKS == 1:
@@ -511,28 +695,6 @@ def _dcnv4_bwd_kernel(
                     tl.atomic_add(ptr_grad_w, grad_off_w_val, mask=mask_q)
                     tl.atomic_add(ptr_grad_h, grad_off_h_val, mask=mask_q)
 
-                # Atomic add to grad_input
-                base_grad_in = grad_input_ptr + b * stride_gib + c * stride_gic
-                offset_base_grad = h_low_i * stride_gih + w_low_i * stride_giw
-                g_ptr1 = base_grad_in[None, :] + offset_base_grad[:, None]
-
-                tl.atomic_add(g_ptr1, go * attn[:, None] * w1[:, None], mask=mask1)
-                tl.atomic_add(
-                    g_ptr1 + stride_giw,
-                    go * attn[:, None] * w2[:, None],
-                    mask=mask2,
-                )
-                tl.atomic_add(
-                    g_ptr1 + stride_gih,
-                    go * attn[:, None] * w3[:, None],
-                    mask=mask3,
-                )
-                tl.atomic_add(
-                    g_ptr1 + stride_gih + stride_giw,
-                    go * attn[:, None] * w4[:, None],
-                    mask=mask4,
-                )
-
                 point_idx += 1
 
     if SOFTMAX and (not WRITE_GRAD_ATTN):
@@ -540,7 +702,6 @@ def _dcnv4_bwd_kernel(
         sum_scaled = tl.sum(grad_attn_scaled, axis=1)
         grad_mask = grad_attn_scaled - mask_vals * sum_scaled[:, None]
 
-        # Store grad_mask
         ptr_grad_mask = grad_offset_base[:, None] + (2 * K_TOTAL + mask_idx[None, :])
         tl.store(
             ptr_grad_mask,
@@ -771,11 +932,49 @@ def dcnv4_backward(
             B,
         )
 
-    _dcnv4_bwd_kernel[grid](
-        value,
+    _dcnv4_bwd_input_kernel[grid](
         offset,
         grad_output,
         grad_input,
+        H_in,
+        W_in,
+        H_out,
+        W_out,
+        group,
+        group_channels,
+        offset.stride(0),
+        offset.stride(1),
+        offset.stride(2),
+        offset.stride(3),
+        grad_output.stride(0),
+        grad_output.stride(1),
+        grad_output.stride(2),
+        grad_output.stride(3),
+        grad_input.stride(0),
+        grad_input.stride(1),
+        grad_input.stride(2),
+        grad_input.stride(3),
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        offset_scale,
+        KERNEL_H=kernel_h,
+        KERNEL_W=kernel_w,
+        K_TOTAL=k_total,
+        BLOCK_K=BLOCK_K,
+        REMOVE_CENTER=int(remove_center),
+        SOFTMAX=bool(softmax),
+        BLOCK_D=BLOCK_D,
+        NUM_D_BLOCKS=num_d_blocks,
+    )
+
+    _dcnv4_bwd_offset_kernel[grid](
+        value,
+        offset,
+        grad_output,
         grad_offset,
         grad_attn if grad_attn is not None else grad_offset,
         H_in,
@@ -796,10 +995,6 @@ def dcnv4_backward(
         grad_output.stride(1),
         grad_output.stride(2),
         grad_output.stride(3),
-        grad_input.stride(0),
-        grad_input.stride(1),
-        grad_input.stride(2),
-        grad_input.stride(3),
         grad_offset.stride(0),
         grad_offset.stride(1),
         grad_offset.stride(2),
