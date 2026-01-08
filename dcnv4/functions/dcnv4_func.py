@@ -35,7 +35,7 @@ Kernel Configuration:
 import torch
 import torch.library
 
-from dcnv4 import triton_ops as _triton_ops
+from dcnv4 import _ops
 
 from .table import BWDTABLE, TABLE
 
@@ -47,15 +47,6 @@ def factors(N):
         if N % i == 0:
             res.append(i)
     return res
-
-
-def _use_triton() -> bool:
-    """Check if Triton backend should be used."""
-    return (
-        _triton_ops is not None
-        and _triton_ops.is_available()
-        and _triton_ops.use_triton()
-    )
 
 
 def findspec(B, H, W, G, C):
@@ -119,46 +110,26 @@ def dcnv4_forward(
         group_channels,
     )
 
-    if _use_triton():
-        output = _triton_ops.dcnv4_forward(
-            input,
-            offset_mask,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            group,
-            group_channels,
-            offset_scale,
-            remove_center,
-            softmax,
-        )
-    else:
-        output = torch.ops.dcnv4_C.dcnv4_forward(
-            input,
-            offset_mask,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            group,
-            group_channels,
-            offset_scale,
-            im2col_step,
-            remove_center,
-            forward_d_stride,
-            forward_block_thread,
-            softmax,
-        )
-    return output
+    return _ops.dcnv4_C.dcnv4_forward(
+        input,
+        offset_mask,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        group,
+        group_channels,
+        offset_scale,
+        im2col_step,
+        remove_center,
+        forward_d_stride,
+        forward_block_thread,
+        softmax,
+    )
 
 
 @dcnv4_forward.register_fake
@@ -211,47 +182,27 @@ def dcnv4_backward(ctx, grad_output):
         group_channels,
     )
 
-    if _use_triton():
-        grad_input, grad_offset_mask = _triton_ops.dcnv4_backward(
-            input,
-            offset_mask,
-            grad_output.contiguous(),
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            group,
-            group_channels,
-            offset_scale,
-            remove_center,
-            softmax,
-        )
-    else:
-        grad_input, grad_offset_mask = torch.ops.dcnv4_C.dcnv4_backward(
-            input,
-            offset_mask,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            group,
-            group_channels,
-            offset_scale,
-            im2col_step,
-            grad_output.contiguous(),
-            remove_center,
-            backward_d_stride,
-            backward_block_thread,
-            softmax,
-        )
+    grad_input, grad_offset_mask = _ops.dcnv4_C.dcnv4_backward(
+        input,
+        offset_mask,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        group,
+        group_channels,
+        offset_scale,
+        im2col_step,
+        grad_output.contiguous(),
+        remove_center,
+        backward_d_stride,
+        backward_block_thread,
+        softmax,
+    )
 
     return (
         grad_input,

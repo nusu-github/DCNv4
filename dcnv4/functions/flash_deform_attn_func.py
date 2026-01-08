@@ -10,7 +10,7 @@
 import torch
 import torch.library
 
-from dcnv4 import triton_ops as _triton_ops
+from dcnv4 import _ops
 
 # Shared memory capacity per GPU architecture (in bytes)
 shm_size_dict = {
@@ -28,15 +28,6 @@ if torch.cuda.is_available():
     shm_size_cap = shm_size_dict.get(cuda_capability, 96000)
 else:
     shm_size_cap = 96000
-
-
-def _use_triton() -> bool:
-    """Check if Triton backend should be used."""
-    return (
-        _triton_ops is not None
-        and _triton_ops.is_available()
-        and _triton_ops.use_triton()
-    )
 
 
 def factors(N):
@@ -89,26 +80,16 @@ def flash_deform_attn(
         value.shape[3],
     )
 
-    if _use_triton():
-        output = _triton_ops.flash_deform_attn_forward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_loc_attn,
-            K,
-        )
-    else:
-        output = torch.ops.dcnv4_C.flash_deform_attn_forward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_loc_attn,
-            im2col_step,
-            K,
-            d_stride,
-            blockthread,
-        )
-    return output
+    return _ops.dcnv4_C.flash_deform_attn_forward(
+        value,
+        value_spatial_shapes,
+        value_level_start_index,
+        sampling_loc_attn,
+        im2col_step,
+        K,
+        d_stride,
+        blockthread,
+    )
 
 
 @flash_deform_attn.register_fake
@@ -139,29 +120,17 @@ def flash_deform_attn_backward(ctx, grad_output):
         value.shape[3],
     )
 
-    if _use_triton():
-        grad_value, grad_sampling_loc_attn = _triton_ops.flash_deform_attn_backward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_loc_attn,
-            grad_output.contiguous(),
-            K,
-        )
-    else:
-        grad_value, grad_sampling_loc_attn = (
-            torch.ops.dcnv4_C.flash_deform_attn_backward(
-                value,
-                value_spatial_shapes,
-                value_level_start_index,
-                sampling_loc_attn,
-                grad_output.contiguous(),
-                im2col_step,
-                K,
-                d_stride_backward,
-                blockthread_backward,
-            )
-        )
+    grad_value, grad_sampling_loc_attn = _ops.dcnv4_C.flash_deform_attn_backward(
+        value,
+        value_spatial_shapes,
+        value_level_start_index,
+        sampling_loc_attn,
+        grad_output.contiguous(),
+        im2col_step,
+        K,
+        d_stride_backward,
+        blockthread_backward,
+    )
 
     return grad_value, None, None, grad_sampling_loc_attn, None, None
 

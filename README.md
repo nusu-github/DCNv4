@@ -12,10 +12,9 @@ pip install git+https://github.com/nusu-github/DCNv4.git
 
 ### Requirements
 
-- Python >= 3.8
+- Python >= 3.10
 - PyTorch >= 2.0.0
 - CUDA toolkit (for CUDA backend)
-- Triton (optional, for Triton backend)
 
 ## Usage
 
@@ -49,17 +48,17 @@ The Triton backend offers better portability across GPU architectures without re
 
 Main DCNv4 module for use as a drop-in replacement for convolutions.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `channels` | int | — | Number of input/output channels |
-| `kernel_size` | int | 3 | Size of the deformable kernel |
-| `stride` | int | 1 | Stride of the convolution |
-| `pad` | int | 1 | Padding size |
-| `dilation` | int | 1 | Dilation rate |
-| `group` | int | 4 | Number of groups for grouped convolution |
-| `offset_scale` | float | 1.0 | Scaling factor for offsets |
-| `dw_kernel_size` | int \| None | None | Depthwise convolution kernel size |
-| `center_feature_scale` | bool | False | Enable center feature scaling |
+| Parameter              | Type        | Default | Description                              |
+| ---------------------- | ----------- | ------- | ---------------------------------------- |
+| `channels`             | int         | —       | Number of input/output channels          |
+| `kernel_size`          | int         | 3       | Size of the deformable kernel            |
+| `stride`               | int         | 1       | Stride of the convolution                |
+| `pad`                  | int         | 1       | Padding size                             |
+| `dilation`             | int         | 1       | Dilation rate                            |
+| `group`                | int         | 4       | Number of groups for grouped convolution |
+| `offset_scale`         | float       | 1.0     | Scaling factor for offsets               |
+| `dw_kernel_size`       | int \| None | None    | Depthwise convolution kernel size        |
+| `center_feature_scale` | bool        | False   | Enable center feature scaling            |
 
 ### `FlashDeformAttn`
 
