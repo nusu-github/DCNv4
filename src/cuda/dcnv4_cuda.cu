@@ -52,9 +52,6 @@ at::Tensor dcnv4_cuda_forward(
   const int width_out =
       (width_in + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
-  const int im2col_step_ = std::min(batch, im2col_step);
-  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
-              ") must divide im2col_step(", im2col_step_, ")");
   TORCH_CHECK(channels == (group * group_channels),
               "Input channels and group times group channels wont match: (",
               channels, " vs ", group * group_channels, ").");
@@ -62,27 +59,24 @@ at::Tensor dcnv4_cuda_forward(
   auto output = torch::zeros(
       {batch, height_out, width_out, group * group_channels}, value.options());
 
-  const int batch_n = im2col_step_;
-  auto output_n = output.view({batch / batch_n, batch_n, height_out, width_out,
-                               group * group_channels});
   auto per_value_size = height_in * width_in * channels;
   auto per_offset_size = height_out * width_out * padded_offset_dim;
+  auto per_out_size = height_out * width_out * group * group_channels;
 
-  for (int n = 0; n < batch / im2col_step_; ++n) {
-    auto columns = output_n.select(0, n);
+  for (int n = 0; n < batch; n += im2col_step) {
+    int current_batch = std::min(batch - n, im2col_step);
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, value.scalar_type(),
         "dcnv4_forward_cuda", ([&] {
-          dcnv4_im2col_cuda(
-              at::cuda::getCurrentCUDAStream(),
-              value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
-              p_offset.data_ptr<scalar_t>() +
-                  n * im2col_step_ * per_offset_size,
-              columns.data_ptr<scalar_t>(), kernel_h, kernel_w, stride_h,
-              stride_w, pad_h, pad_w, dilation_h, dilation_w, group,
-              group_channels, batch_n, height_in, width_in, height_out,
-              width_out, offset_scale, remove_center, d_stride, block_thread,
-              softmax, padded_offset_dim);
+          dcnv4_im2col_cuda(at::cuda::getCurrentCUDAStream(),
+                            value.data_ptr<scalar_t>() + n * per_value_size,
+                            p_offset.data_ptr<scalar_t>() + n * per_offset_size,
+                            output.data_ptr<scalar_t>() + n * per_out_size,
+                            kernel_h, kernel_w, stride_h, stride_w, pad_h,
+                            pad_w, dilation_h, dilation_w, group,
+                            group_channels, current_batch, height_in, width_in,
+                            height_out, width_out, offset_scale, remove_center,
+                            d_stride, block_thread, softmax, padded_offset_dim);
         }));
   }
 
@@ -122,9 +116,6 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
   const int width_out =
       (width_in + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
 
-  const int im2col_step_ = std::min(batch, im2col_step);
-  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
-              ") must divide im2col_step(", im2col_step_, ")");
   TORCH_CHECK(channels == (group * group_channels),
               "Input channels and group times group channels wont match: (",
               channels, " vs ", group * group_channels, ").");
@@ -137,31 +128,26 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
   auto grad_input = torch::zeros_like(value, dtype);
   auto grad_offset = torch::zeros_like(p_offset, dtype);
 
-  const int batch_n = im2col_step_;
-  auto grad_output_n = grad_output.view(
-      {batch / batch_n, batch_n, height_out, width_out, group, group_channels});
   auto per_value_size = height_in * width_in * channels;
   auto per_offset_size = height_out * width_out * padded_offset_dim;
+  auto per_grad_output_size = height_out * width_out * group * group_channels;
 
-  for (int n = 0; n < batch / im2col_step_; ++n) {
-    auto columns = grad_output_n.select(0, n);
+  for (int n = 0; n < batch; n += im2col_step) {
+    int current_batch = std::min(batch - n, im2col_step);
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, value.scalar_type(),
         "dcnv4_backward_cuda", ([&] {
           dcnv4_col2im_cuda(
               at::cuda::getCurrentCUDAStream(),
-              value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
-              p_offset.data_ptr<scalar_t>() +
-                  n * im2col_step_ * per_offset_size,
-              columns.data_ptr<scalar_t>(), kernel_h, kernel_w, stride_h,
-              stride_w, pad_h, pad_w, dilation_h, dilation_w, group,
-              group_channels, batch_n, height_in, width_in, height_out,
-              width_out, offset_scale, remove_center,
-              grad_input.data_ptr<opmath_t>() +
-                  n * im2col_step_ * per_value_size,
-              grad_offset.data_ptr<opmath_t>() +
-                  n * im2col_step_ * per_offset_size,
-              d_stride, block_thread, softmax, padded_offset_dim);
+              value.data_ptr<scalar_t>() + n * per_value_size,
+              p_offset.data_ptr<scalar_t>() + n * per_offset_size,
+              grad_output.data_ptr<scalar_t>() + n * per_grad_output_size,
+              kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation_h,
+              dilation_w, group, group_channels, current_batch, height_in,
+              width_in, height_out, width_out, offset_scale, remove_center,
+              grad_input.data_ptr<opmath_t>() + n * per_value_size,
+              grad_offset.data_ptr<opmath_t>() + n * per_offset_size, d_stride,
+              block_thread, softmax, padded_offset_dim);
         }));
   }
 

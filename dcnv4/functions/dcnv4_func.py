@@ -108,6 +108,7 @@ def dcnv4_forward(
     offset_scale: float,
     im2col_step: int,
     remove_center: int,
+    softmax: bool = False,
 ) -> torch.Tensor:
     """Forward pass of DCNv4."""
     forward_d_stride, forward_block_thread = findspec(
@@ -134,7 +135,7 @@ def dcnv4_forward(
             group_channels,
             offset_scale,
             remove_center,
-            False,
+            softmax,
         )
     else:
         output = torch.ops.dcnv4_C.dcnv4_forward(
@@ -155,7 +156,7 @@ def dcnv4_forward(
             remove_center,
             forward_d_stride,
             forward_block_thread,
-            False,
+            softmax,
         )
     return output
 
@@ -177,6 +178,7 @@ def _(
     offset_scale,
     im2col_step,
     remove_center,
+    softmax=False,
 ):
     N, H_in, W_in, _ = input.shape
     H_out = (H_in + 2 * pad_h - (dilation_h * (kernel_h - 1) + 1)) // stride_h + 1
@@ -199,6 +201,7 @@ def dcnv4_backward(ctx, grad_output):
     offset_scale = ctx.offset_scale
     im2col_step = ctx.im2col_step
     remove_center = ctx.remove_center
+    softmax = ctx.softmax
 
     backward_d_stride, backward_block_thread = find_spec_bwd(
         input.shape[0],
@@ -225,7 +228,7 @@ def dcnv4_backward(ctx, grad_output):
             group_channels,
             offset_scale,
             remove_center,
-            False,
+            softmax,
         )
     else:
         grad_input, grad_offset_mask = torch.ops.dcnv4_C.dcnv4_backward(
@@ -247,12 +250,13 @@ def dcnv4_backward(ctx, grad_output):
             remove_center,
             backward_d_stride,
             backward_block_thread,
-            False,
+            softmax,
         )
 
     return (
         grad_input,
         grad_offset_mask,
+        None,
         None,
         None,
         None,
@@ -285,6 +289,7 @@ def setup_context(ctx, inputs, output) -> None:
     ctx.offset_scale = inputs[12]
     ctx.im2col_step = inputs[13]
     ctx.remove_center = inputs[14]
+    ctx.softmax = inputs[15]
 
 
 dcnv4_forward.register_autograd(dcnv4_backward, setup_context=setup_context)

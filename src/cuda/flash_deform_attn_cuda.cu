@@ -54,10 +54,6 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
   const int num_query = sampling_loc_attn.size(1);
   const int num_point = K;
 
-  const int im2col_step_ = std::min(batch, im2col_step);
-  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
-              ") must divide im2col_step(", im2col_step_, ")");
-
   auto output = torch::zeros({batch, num_query, num_heads, num_channels},
                              value.options());
 
@@ -65,20 +61,20 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
   auto per_offset_size = num_query * num_heads * num_levels * num_point * 3;
   auto per_out_size = num_query * num_heads * num_channels;
 
-  for (int n = 0; n < batch / im2col_step_; ++n) {
+  for (int n = 0; n < batch; n += im2col_step) {
+    int current_batch = std::min(batch - n, im2col_step);
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, value.scalar_type(),
         "flash_deform_attn_forward_cuda", ([&] {
           flash_deformable_im2col_cuda(
               at::cuda::getCurrentCUDAStream(),
-              value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
+              value.data_ptr<scalar_t>() + n * per_value_size,
               spatial_shapes.data_ptr<int64_t>(),
               level_start_index.data_ptr<int64_t>(),
-              sampling_loc_attn.data_ptr<scalar_t>() +
-                  n * im2col_step_ * per_offset_size,
-              output.data_ptr<scalar_t>() + n * im2col_step_ * per_out_size,
-              im2col_step_, spatial_size, num_heads, num_channels, num_levels,
-              num_query, num_point, d_stride, block_thread, true);
+              sampling_loc_attn.data_ptr<scalar_t>() + n * per_offset_size,
+              output.data_ptr<scalar_t>() + n * per_out_size, current_batch,
+              spatial_size, num_heads, num_channels, num_levels, num_query,
+              num_point, d_stride, block_thread, true);
         }));
   }
   output = output.view({batch, num_query, num_heads * num_channels});
@@ -117,10 +113,6 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
   const int num_query = sampling_loc_attn.size(1);
   const int num_point = K;
 
-  const int im2col_step_ = std::min(batch, im2col_step);
-  TORCH_CHECK(batch % im2col_step_ == 0, "batch(", batch,
-              ") must divide im2col_step(", im2col_step_, ")");
-
   auto dtype = value.dtype();
   if (dtype == at::kHalf) {
     dtype = at::kFloat;
@@ -133,26 +125,23 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
   auto per_offset_size = num_query * num_heads * num_levels * num_point * 3;
   auto per_out_size = num_query * num_heads * num_channels;
 
-  for (int n = 0; n < batch / im2col_step_; ++n) {
+  for (int n = 0; n < batch; n += im2col_step) {
+    int current_batch = std::min(batch - n, im2col_step);
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, value.scalar_type(),
         "flash_deform_attn_backward_cuda", ([&] {
           flash_deformable_col2im_cuda(
               at::cuda::getCurrentCUDAStream(),
-              value.data_ptr<scalar_t>() + n * im2col_step_ * per_value_size,
+              value.data_ptr<scalar_t>() + n * per_value_size,
               spatial_shapes.data_ptr<int64_t>(),
               level_start_index.data_ptr<int64_t>(),
-              sampling_loc_attn.data_ptr<scalar_t>() +
-                  n * im2col_step_ * per_offset_size,
-              grad_output.data_ptr<scalar_t>() +
-                  n * im2col_step_ * per_out_size,
-              im2col_step_, spatial_size, num_heads, num_channels, num_levels,
+              sampling_loc_attn.data_ptr<scalar_t>() + n * per_offset_size,
+              grad_output.data_ptr<scalar_t>() + n * per_out_size,
+              current_batch, spatial_size, num_heads, num_channels, num_levels,
               num_query, num_point,
-              grad_input.data_ptr<opmath_t>() +
-                  n * im2col_step_ * per_value_size,
-              grad_offset.data_ptr<opmath_t>() +
-                  n * im2col_step_ * per_offset_size,
-              d_stride, block_thread);
+              grad_input.data_ptr<opmath_t>() + n * per_value_size,
+              grad_offset.data_ptr<opmath_t>() + n * per_offset_size, d_stride,
+              block_thread);
         }));
   }
 

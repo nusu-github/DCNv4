@@ -252,8 +252,6 @@ class FlashDeformAttn(nn.Module):
         sampling_loc_attn = torch.cat([sampling_locations, attention_weights], dim=-1)
 
         im2col_step = self.im2col_step
-        if N % im2col_step != 0:
-            im2col_step = N
 
         output = flash_deform_attn(
             value,

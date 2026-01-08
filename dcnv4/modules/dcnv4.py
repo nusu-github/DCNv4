@@ -271,6 +271,11 @@ class dcnv4(nn.Module):
             H, W = shape
         else:
             H, W = int(L**0.5), int(L**0.5)
+            if H * W != L:
+                msg = f"Input length {L} is not a perfect square, please provide 'shape' argument."
+                raise ValueError(
+                    msg,
+                )
 
         x = input
         if not self.without_pointwise:
@@ -288,8 +293,6 @@ class dcnv4(nn.Module):
         x_proj = x
 
         im2col_step = 256
-        if N % im2col_step != 0:
-            im2col_step = N
 
         x = dcnv4_forward(
             x,
@@ -311,7 +314,7 @@ class dcnv4(nn.Module):
 
         if self.center_feature_scale:
             center_feature_scale = self.center_feature_scale_module(
-                x,
+                x_proj,
                 self.center_feature_scale_proj_weight,
                 self.center_feature_scale_proj_bias,
             )
