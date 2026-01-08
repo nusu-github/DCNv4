@@ -18,3 +18,6 @@ wheel.packages = ["dcnv4"]
 minimum-version = "0.11"
 build-dir = "build/{wheel_tag}"
 strict-config = true
+
+[dependency-groups]
+dev = ["pytest"]
