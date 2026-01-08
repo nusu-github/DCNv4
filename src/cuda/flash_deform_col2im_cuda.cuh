@@ -7,6 +7,7 @@
 
 #include <THC/THCAtomics.cuh>
 
+#include "common.h"
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -15,16 +16,14 @@
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include "common.h"
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void
 backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
                 const int64_t *data_level_start_index, const scalar_t *p_offset,
                 const scalar_t *grad_output, const int N, const int G,
-                const int D, const int Q, 
-                const int block_multiplier, opmath_t *grad_im,
-                opmath_t *grad_offset) {
+                const int D, const int Q, const int block_multiplier,
+                opmath_t *grad_im, opmath_t *grad_offset) {
 
   extern __shared__ char _s[];
 
@@ -152,8 +151,8 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
   if (threadIdx.x == 0) {
     for (int i = 0; i < L * K; ++i) {
       opmath_t grad_i = 0.;
-      const opmath_t *group_g_mask = cache_g_mask_before_softmax +
-                                      (threadIdx.y + threadIdx.z * G) * L * K;
+      const opmath_t *group_g_mask =
+          cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
       for (int j = 0; j < L * K; ++j) {
         if (i != j) {
           grad_i -= group_g_mask[j] * p_mask_shm[i] * p_mask_shm[j];
@@ -169,13 +168,12 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 }
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
-__global__ void
-backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spatial_shapes,
-                const int64_t *data_level_start_index, const scalar_t *p_offset,
-                const scalar_t *grad_output, const int N, const int G,
-                const int D, const int Q, 
-                const int block_multiplier, opmath_t *grad_im,
-                opmath_t *grad_offset) {
+__global__ void backward_kernel_warp_primitive(
+    const scalar_t *p_value, const int64_t *data_spatial_shapes,
+    const int64_t *data_level_start_index, const scalar_t *p_offset,
+    const scalar_t *grad_output, const int N, const int G, const int D,
+    const int Q, const int block_multiplier, opmath_t *grad_im,
+    opmath_t *grad_offset) {
 
   extern __shared__ char _s[];
 
@@ -185,18 +183,21 @@ backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spat
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
 
-  const int tid = (threadIdx.z * blockDim.y + threadIdx.y)*blockDim.x + threadIdx.x;
+  const int tid =
+      (threadIdx.z * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
   const int lane_id = tid % kWarpSize;
   const int group_per_warp = kWarpSize / blockDim.x;
   const int group_in_warp_id = (threadIdx.z * G + threadIdx.y) % group_per_warp;
-  const unsigned lane_mask = ((1 << blockDim.x) - 1) << (group_in_warp_id * blockDim.x);
+  const unsigned lane_mask = ((1 << blockDim.x) - 1)
+                             << (group_in_warp_id * blockDim.x);
 
   opmath_t *cache_g_mask_before_softmax =
       (opmath_t *)(_s); // (block_multiplier*G) * (L * K)
 
   opmath_t *const p_mask_shm =
-      ((opmath_t *)(cache_g_mask_before_softmax + block_multiplier * G * L * K)) +
-        (threadIdx.z * G + gi) * L * K; // G*block_multiplier * L * K
+      ((opmath_t *)(cache_g_mask_before_softmax +
+                    block_multiplier * G * L * K)) +
+      (threadIdx.z * G + gi) * L * K; // G*block_multiplier * L * K
 
   const scalar_t *p_offset_ptr =
       p_offset + (((bi * Q + qi) * G + gi) * L) * K * 3;
@@ -276,10 +277,13 @@ backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spat
             reg_grad_offset);
 
         // aggregate across different channel for offset
-        for (uint32_t offset = blockDim.x>>1; offset > 0; offset >>= 1){
-          reg_grad_offset[0] += __shfl_down_sync(lane_mask, reg_grad_offset[0], offset);
-          reg_grad_offset[1] += __shfl_down_sync(lane_mask, reg_grad_offset[1], offset);
-          reg_grad_offset[2] += __shfl_down_sync(lane_mask, reg_grad_offset[2], offset);
+        for (uint32_t offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+          reg_grad_offset[0] +=
+              __shfl_down_sync(lane_mask, reg_grad_offset[0], offset);
+          reg_grad_offset[1] +=
+              __shfl_down_sync(lane_mask, reg_grad_offset[1], offset);
+          reg_grad_offset[2] +=
+              __shfl_down_sync(lane_mask, reg_grad_offset[2], offset);
         }
 
         if (threadIdx.x == 0) {
@@ -288,7 +292,8 @@ backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spat
           grad_offset[((bi * Q + qi) * G + gi) * L * K * 3 + li * K * 2 +
                       ki * 2 + 1] = reg_grad_offset[1];
           cache_g_mask_before_softmax
-              [((threadIdx.y + threadIdx.z * G) * L + li) * K + ki] = reg_grad_offset[2];
+              [((threadIdx.y + threadIdx.z * G) * L + li) * K + ki] =
+                  reg_grad_offset[2];
         }
       }
       __syncthreads();
@@ -301,8 +306,8 @@ backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spat
   if (threadIdx.x == 0) {
     for (int i = 0; i < L * K; ++i) {
       opmath_t grad_i = 0.;
-      const opmath_t *group_g_mask = cache_g_mask_before_softmax +
-                                      (threadIdx.y + threadIdx.z * G) * L * K;
+      const opmath_t *group_g_mask =
+          cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
       for (int j = 0; j < L * K; ++j) {
         if (i != j) {
           grad_i -= group_g_mask[j] * p_mask_shm[i] * p_mask_shm[j];
@@ -318,71 +323,74 @@ backward_kernel_warp_primitive(const scalar_t *p_value, const int64_t *data_spat
 }
 
 template <typename scalar_t, typename stride_type, int K, int d_stride>
-void _flash_deformable_col2im_cuda(
-    cudaStream_t stream,
-    const scalar_t *value,                 // B, N, G, D
-    const int64_t *data_spatial_shapes,    // L * 2
-    const int64_t *data_level_start_index, // L
-    const scalar_t *offset,                // B, N, G, L, K, 3
-    const scalar_t *grad_output,           // B, N, G, D
-    const int B, const int N, const int G, const int D, const int L,
-    const int Q, opmath_t *grad_im, opmath_t *grad_offset,
-    const int block_thread) {
+void _flash_deformable_col2im_cuda(cudaStream_t stream,
+                                   const scalar_t *value, // B, N, G, D
+                                   const int64_t *data_spatial_shapes, // L * 2
+                                   const int64_t *data_level_start_index, // L
+                                   const scalar_t *offset, // B, N, G, L, K, 3
+                                   const scalar_t *grad_output, // B, N, G, D
+                                   const int B, const int N, const int G,
+                                   const int D, const int L, const int Q,
+                                   opmath_t *grad_im, opmath_t *grad_offset,
+                                   const int block_thread) {
 
   assert(D % d_stride == 0);
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  assert((B*Q) % block_multiplier == 0);
-  dim3 num_blocks(B*Q / block_multiplier);
+  assert((B * Q) % block_multiplier == 0);
+  dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   int shm_size;
-  if(check_backward_warpp(d_stride, D)){
-    shm_size =
-      sizeof(opmath_t) * (block_multiplier * G * L * K) +
-      sizeof(opmath_t) * (G * block_multiplier * L * K);
-  }
-  else{
-    shm_size =
-      sizeof(opmath_t) * (block_multiplier * G * L * K) +
-      sizeof(opmath_t) * (G * block_multiplier * L * K) + 
-      sizeof(opmath_t) * (G * block_multiplier * D / d_stride * 3);
+  if (check_backward_warpp(d_stride, D)) {
+    shm_size = sizeof(opmath_t) * (block_multiplier * G * L * K) +
+               sizeof(opmath_t) * (G * block_multiplier * L * K);
+  } else {
+    shm_size = sizeof(opmath_t) * (block_multiplier * G * L * K) +
+               sizeof(opmath_t) * (G * block_multiplier * L * K) +
+               sizeof(opmath_t) * (G * block_multiplier * D / d_stride * 3);
   }
 
-  auto kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 1, K>;
+  auto kernel =
+      backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 1, K>;
 
   switch (L) {
   case 1:
-    if(check_backward_warpp(d_stride, D)){
-      kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 1, K>;
+    if (check_backward_warpp(d_stride, D)) {
+      kernel =
+          backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 1, K>;
     } else {
       kernel = backward_kernel<scalar_t, d_stride, stride_type, 1, K>;
     }
     break;
   case 2:
-    if(check_backward_warpp(d_stride, D)){
-      kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 2, K>;
+    if (check_backward_warpp(d_stride, D)) {
+      kernel =
+          backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 2, K>;
     } else {
       kernel = backward_kernel<scalar_t, d_stride, stride_type, 2, K>;
     }
     break;
   case 3:
-    if(check_backward_warpp(d_stride, D)){
-      kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 3, K>;
+    if (check_backward_warpp(d_stride, D)) {
+      kernel =
+          backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 3, K>;
     } else {
       kernel = backward_kernel<scalar_t, d_stride, stride_type, 3, K>;
     }
     break;
   case 4:
-    if(check_backward_warpp(d_stride, D)){
-      kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 4, K>;
+    if (check_backward_warpp(d_stride, D)) {
+      kernel =
+          backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 4, K>;
     } else {
       kernel = backward_kernel<scalar_t, d_stride, stride_type, 4, K>;
     }
     break;
   case 5:
-    if(check_backward_warpp(d_stride, D)){
-      kernel = backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 5, K>;
+    if (check_backward_warpp(d_stride, D)) {
+      kernel =
+          backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 5, K>;
     } else {
       kernel = backward_kernel<scalar_t, d_stride, stride_type, 5, K>;
     }
@@ -419,12 +427,12 @@ void flash_deformable_col2im_cuda_inner(
     const scalar_t *offset,                // B, N, G, L, K, 3
     const scalar_t *grad_output,           // B, N, G, D
     const int B, const int N, const int G, const int D, const int L,
-    const int Q, opmath_t *grad_im, opmath_t *grad_offset, 
-    const int d_stride, const int block_thread) {
+    const int Q, opmath_t *grad_im, opmath_t *grad_offset, const int d_stride,
+    const int block_thread) {
 
   assert(D % d_stride == 0);
-  if(sizeof(scalar_t) == 2) {
-    switch(d_stride) {
+  if (sizeof(scalar_t) == 2) {
+    switch (d_stride) {
     case 1:
       _flash_deformable_col2im_cuda<scalar_t, scalar_t, K, 1>(
           stream,
@@ -433,8 +441,7 @@ void flash_deformable_col2im_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           grad_output,            // B, N, G, D
-          B, N, G, D, L, Q, grad_im, grad_offset,
-          block_thread);
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     case 2:
       _flash_deformable_col2im_cuda<scalar_t, uint, K, 2>(
@@ -444,8 +451,7 @@ void flash_deformable_col2im_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           grad_output,            // B, N, G, D
-          B, N, G, D, L, Q, grad_im, grad_offset,
-          block_thread);
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     case 4:
       _flash_deformable_col2im_cuda<scalar_t, uint2, K, 4>(
@@ -455,8 +461,7 @@ void flash_deformable_col2im_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           grad_output,            // B, N, G, D
-          B, N, G, D, L, Q, grad_im, grad_offset,
-          block_thread);
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     case 8:
       _flash_deformable_col2im_cuda<scalar_t, uint4, K, 8>(
@@ -466,8 +471,7 @@ void flash_deformable_col2im_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           grad_output,            // B, N, G, D
-          B, N, G, D, L, Q, grad_im, grad_offset,
-          block_thread);
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     case 16:
       _flash_deformable_col2im_cuda<scalar_t, ulonglong4, K, 16>(
@@ -477,8 +481,7 @@ void flash_deformable_col2im_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           grad_output,            // B, N, G, D
-          B, N, G, D, L, Q, grad_im, grad_offset,
-          block_thread);
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     default:
       printf("not supported for d_stride > 16 for fp16");
@@ -486,50 +489,46 @@ void flash_deformable_col2im_cuda_inner(
     }
   } else {
     assert(sizeof(scalar_t) == 4);
-    switch(d_stride) {
-    case 1:  
+    switch (d_stride) {
+    case 1:
       _flash_deformable_col2im_cuda<scalar_t, scalar_t, K, 1>(
-        stream,
-        value,                  // B, N, G, D
-        data_spatial_shapes,    // L * 2
-        data_level_start_index, // L
-        offset,                 // B, N, G, L, K, 3
-        grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        block_thread);
+          stream,
+          value,                  // B, N, G, D
+          data_spatial_shapes,    // L * 2
+          data_level_start_index, // L
+          offset,                 // B, N, G, L, K, 3
+          grad_output,            // B, N, G, D
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
-    case 2:  
+    case 2:
       _flash_deformable_col2im_cuda<scalar_t, uint2, K, 2>(
-        stream,
-        value,                  // B, N, G, D
-        data_spatial_shapes,    // L * 2
-        data_level_start_index, // L
-        offset,                 // B, N, G, L, K, 3
-        grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        block_thread);
+          stream,
+          value,                  // B, N, G, D
+          data_spatial_shapes,    // L * 2
+          data_level_start_index, // L
+          offset,                 // B, N, G, L, K, 3
+          grad_output,            // B, N, G, D
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
-    case 4:  
+    case 4:
       _flash_deformable_col2im_cuda<scalar_t, uint4, K, 4>(
-        stream,
-        value,                  // B, N, G, D
-        data_spatial_shapes,    // L * 2
-        data_level_start_index, // L
-        offset,                 // B, N, G, L, K, 3
-        grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        block_thread);
+          stream,
+          value,                  // B, N, G, D
+          data_spatial_shapes,    // L * 2
+          data_level_start_index, // L
+          offset,                 // B, N, G, L, K, 3
+          grad_output,            // B, N, G, D
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
-    case 8:  
+    case 8:
       _flash_deformable_col2im_cuda<scalar_t, ulonglong4, K, 8>(
-        stream,
-        value,                  // B, N, G, D
-        data_spatial_shapes,    // L * 2
-        data_level_start_index, // L
-        offset,                 // B, N, G, L, K, 3
-        grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        block_thread);
+          stream,
+          value,                  // B, N, G, D
+          data_spatial_shapes,    // L * 2
+          data_level_start_index, // L
+          offset,                 // B, N, G, L, K, 3
+          grad_output,            // B, N, G, D
+          B, N, G, D, L, Q, grad_im, grad_offset, block_thread);
       break;
     default:
       printf("not supported for d_stride > 8 for fp32");
@@ -539,16 +538,17 @@ void flash_deformable_col2im_cuda_inner(
 }
 
 template <typename scalar_t>
-void flash_deformable_col2im_cuda(
-    cudaStream_t stream,
-    const scalar_t *value,                 // B, N, G, D
-    const int64_t *data_spatial_shapes,    // L * 2
-    const int64_t *data_level_start_index, // L
-    const scalar_t *offset,                // B, N, G, L, K, 3
-    const scalar_t *grad_output,           // B, N, G, D
-    const int B, const int N, const int G, const int D, const int L,
-    const int Q, const int K, opmath_t *grad_im, opmath_t *grad_offset,
-    const int d_stride, const int block_thread) {
+void flash_deformable_col2im_cuda(cudaStream_t stream,
+                                  const scalar_t *value, // B, N, G, D
+                                  const int64_t *data_spatial_shapes, // L * 2
+                                  const int64_t *data_level_start_index, // L
+                                  const scalar_t *offset, // B, N, G, L, K, 3
+                                  const scalar_t *grad_output, // B, N, G, D
+                                  const int B, const int N, const int G,
+                                  const int D, const int L, const int Q,
+                                  const int K, opmath_t *grad_im,
+                                  opmath_t *grad_offset, const int d_stride,
+                                  const int block_thread) {
 
   switch (K) {
   case 4:
@@ -559,8 +559,7 @@ void flash_deformable_col2im_cuda(
         data_level_start_index, // L
         offset,                 // B, N, G, L, K, 3
         grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        d_stride, block_thread);
+        B, N, G, D, L, Q, grad_im, grad_offset, d_stride, block_thread);
     break;
   case 8:
     flash_deformable_col2im_cuda_inner<scalar_t, 8>(
@@ -570,8 +569,7 @@ void flash_deformable_col2im_cuda(
         data_level_start_index, // L
         offset,                 // B, N, G, L, K, 3
         grad_output,            // B, N, G, D
-        B, N, G, D, L, Q, grad_im, grad_offset,
-        d_stride, block_thread);
+        B, N, G, D, L, Q, grad_im, grad_offset, d_stride, block_thread);
     break;
   default:
     printf("not supported for K not in [4, 8]");

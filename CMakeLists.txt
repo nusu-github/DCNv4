@@ -31,16 +31,17 @@ target_include_directories(dcnv4_C PRIVATE
   ${TORCH_INCLUDE_DIRS}
 )
 
-# Link
-target_link_libraries(dcnv4_C PRIVATE
-  ${TORCH_LIBRARIES}
-  CUDA::cudart
-)
-
 # Definitions
 target_compile_definitions(dcnv4_C PRIVATE
   WITH_CUDA
   TORCH_EXTENSION_NAME=_C
+)
+target_compile_definitions(dcnv4_C PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:
+    __CUDA_NO_HALF_OPERATORS__
+    __CUDA_NO_HALF_CONVERSIONS__
+    __CUDA_NO_HALF2_OPERATORS__
+  >
 )
 
 # Compile options
@@ -48,15 +49,18 @@ target_compile_options(dcnv4_C PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:
     -O3
     -lineinfo
-    -DCUDA_HAS_FP16=1
-    -D__CUDA_NO_HALF_OPERATORS__
-    -D__CUDA_NO_HALF_CONVERSIONS__
-    -D__CUDA_NO_HALF2_OPERATORS__
+    --expt-relaxed-constexpr
+    --extended-lambda
+    --use_fast_math
   >
-  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+  $<$<COMPILE_LANGUAGE:CXX>:
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Debug>:-g>
+  >
 )
 
 set_target_properties(dcnv4_C PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
   BUILD_RPATH_USE_ORIGIN ON
   INSTALL_RPATH_USE_LINK_PATH ON
 )

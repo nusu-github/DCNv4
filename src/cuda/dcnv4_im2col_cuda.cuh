@@ -7,6 +7,7 @@
 
 #include <THC/THCAtomics.cuh>
 
+#include "common.h"
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -15,7 +16,6 @@
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include "common.h"
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K,
           bool softmax>
@@ -41,7 +41,8 @@ __global__ void forward_kernel_dcn(
 
   opmath_t p_out_shm[d_stride] = {0.};
 
-  const scalar_t *p_offset_ptr = p_offset + (bi*Q + qi)*padded_offset_dim + gi*K*3;
+  const scalar_t *p_offset_ptr =
+      p_offset + (bi * Q + qi) * padded_offset_dim + gi * K * 3;
 
   const int mask_length = K;
   const int num_thread = (D / d_stride);
@@ -160,36 +161,37 @@ __global__ void forward_kernel_dcn_reg(
   opmath_t p_mask_shm[K] = {0.};
   opmath_t p_out_shm[d_stride] = {0.};
 
-  const scalar_t *p_offset_ptr = p_offset + (bi*Q + qi)*padded_offset_dim + gi*K*3;
+  const scalar_t *p_offset_ptr =
+      p_offset + (bi * Q + qi) * padded_offset_dim + gi * K * 3;
   const int mask_length = K;
   const int num_thread = (D / d_stride);
   const int num_iter = mask_length / num_thread;
   const int remainder = mask_length - num_iter * num_thread;
 
-  for (int i=0; i < K; i++){
-    p_mask_shm[i] = *(p_offset_ptr + K*2 + i);
+  for (int i = 0; i < K; i++) {
+    p_mask_shm[i] = *(p_offset_ptr + K * 2 + i);
   }
 
   if (softmax) {
     // Calculate softmax over L and K
-      opmath_t softmax_max = -1e100;
-      opmath_t softmax_sum = 0.0;
-      // get max
-      for (int j = 0; j < K; j++) {
-        softmax_max = max(softmax_max, p_mask_shm[j]);
-      }
+    opmath_t softmax_max = -1e100;
+    opmath_t softmax_sum = 0.0;
+    // get max
+    for (int j = 0; j < K; j++) {
+      softmax_max = max(softmax_max, p_mask_shm[j]);
+    }
 
-      // get sumexp
-      for (int j = 0; j < K; j++) {
-        opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
-        p_mask_shm[j] = exp_results;
-        softmax_sum += exp_results;
-      }
+    // get sumexp
+    for (int j = 0; j < K; j++) {
+      opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+      p_mask_shm[j] = exp_results;
+      softmax_sum += exp_results;
+    }
 
-      // normalize
-      for (int j = 0; j < K; j++) {
-        p_mask_shm[j] /= softmax_sum;
-      }
+    // normalize
+    for (int j = 0; j < K; j++) {
+      p_mask_shm[j] /= softmax_sum;
+    }
   }
 
   int offset_idx = 0;
@@ -245,24 +247,23 @@ __global__ void forward_kernel_dcn_reg(
 
 template <typename scalar_t, typename stride_type, int d_stride>
 void _dcnv4_im2col_cuda(cudaStream_t stream,
-                              const scalar_t *value,    // B, H * W, (G * D)
-                              const scalar_t *p_offset, // B, H * W, G * K * 3)
-                              scalar_t *output,         // B, H_out*W_out, G * D
-                              const int kernel_h, const int kernel_w,
-                              const int stride_h, const int stride_w,
-                              const int pad_h, const int pad_w,
-                              const int dilation_h, const int dilation_w,
-                              const int G, const int D, const int B,
-                              const int height_in, const int width_in,
-                              const int height_out, const int width_out,
-                              const opmath_t offset_scale,
-                              const int remove_center, const int block_thread,
-                              const int softmax,
-                              const int padded_offset_dim) {
+                        const scalar_t *value,    // B, H * W, (G * D)
+                        const scalar_t *p_offset, // B, H * W, G * K * 3)
+                        scalar_t *output,         // B, H_out*W_out, G * D
+                        const int kernel_h, const int kernel_w,
+                        const int stride_h, const int stride_w, const int pad_h,
+                        const int pad_w, const int dilation_h,
+                        const int dilation_w, const int G, const int D,
+                        const int B, const int height_in, const int width_in,
+                        const int height_out, const int width_out,
+                        const opmath_t offset_scale, const int remove_center,
+                        const int block_thread, const int softmax,
+                        const int padded_offset_dim) {
 
   constexpr int L = 1;
 
-  auto kernel = forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, true>;
+  auto kernel =
+      forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, true>;
 
   int N = height_in * width_in;
   int Q = height_out * width_out;
@@ -274,10 +275,12 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
   if (softmax) {
     switch (K) {
     case 9:
-      kernel = forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, true>;
+      kernel =
+          forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, true>;
       break;
     case 8:
-      kernel = forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, true>;
+      kernel =
+          forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, true>;
       break;
     default:
       printf("K=%ld\n", K);
@@ -286,11 +289,13 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
   } else {
     switch (K) {
     case 9:
-      kernel = forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, false>;
+      kernel =
+          forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 9, false>;
       break;
     case 8:
-      kernel = forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, false>;
-    break;
+      kernel =
+          forward_kernel_dcn_reg<scalar_t, d_stride, stride_type, 1, 8, false>;
+      break;
     default:
       printf("K=%ld\n", K);
       throw std::invalid_argument("invalid kernel shape");
@@ -298,9 +303,9 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
   }
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  assert((B*Q) % block_multiplier == 0);
+  assert((B * Q) % block_multiplier == 0);
 
-  dim3 num_blocks(B*Q / block_multiplier);
+  dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   int shm_size = 0;
@@ -311,7 +316,8 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
   kernel<<<num_blocks, num_threads, shm_size, stream>>>(
       value, p_offset, output, G, D, Q, kernel_h, kernel_w, stride_h, stride_w,
       pad_h, pad_w, dilation_h, dilation_w, height_in, width_in, height_out,
-      width_out, offset_scale, remove_center, block_multiplier, padded_offset_dim);
+      width_out, offset_scale, remove_center, block_multiplier,
+      padded_offset_dim);
 
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
@@ -325,18 +331,19 @@ void _dcnv4_im2col_cuda(cudaStream_t stream,
 }
 
 template <typename scalar_t>
-void dcnv4_im2col_cuda(
-    cudaStream_t stream,
-    const scalar_t *value,    // B, H * W, (G * D)
-    const scalar_t *p_offset, // B, H * W, G * K * 3)
-    scalar_t *output,         // B, H_out*W_out, G * D
-    const int kernel_h, const int kernel_w, const int stride_h,
-    const int stride_w, const int pad_h, const int pad_w, const int dilation_h,
-    const int dilation_w, const int G, const int D, const int B,
-    const int height_in, const int width_in, const int height_out,
-    const int width_out, const opmath_t offset_scale, const int remove_center,
-    const int d_stride, const int block_thread, const bool softmax,
-    const int padded_offset_dim) {
+void dcnv4_im2col_cuda(cudaStream_t stream,
+                       const scalar_t *value,    // B, H * W, (G * D)
+                       const scalar_t *p_offset, // B, H * W, G * K * 3)
+                       scalar_t *output,         // B, H_out*W_out, G * D
+                       const int kernel_h, const int kernel_w,
+                       const int stride_h, const int stride_w, const int pad_h,
+                       const int pad_w, const int dilation_h,
+                       const int dilation_w, const int G, const int D,
+                       const int B, const int height_in, const int width_in,
+                       const int height_out, const int width_out,
+                       const opmath_t offset_scale, const int remove_center,
+                       const int d_stride, const int block_thread,
+                       const bool softmax, const int padded_offset_dim) {
 
   assert(D % d_stride == 0);
   if (sizeof(scalar_t) == 2) {

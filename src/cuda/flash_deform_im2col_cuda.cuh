@@ -17,6 +17,7 @@
 
 #include <THC/THCAtomics.cuh>
 
+#include "common.h"
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -25,7 +26,6 @@
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include "common.h"
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void
@@ -127,11 +127,12 @@ forward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 }
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
-__global__ void
-forward_kernel_reg(const scalar_t *p_value, const int64_t *data_spatial_shapes,
-               const int64_t *data_level_start_index, const scalar_t *p_offset,
-               scalar_t *p_output, const int N, const int G, const int D,
-               const int Q, const int block_multiplier) {
+__global__ void forward_kernel_reg(const scalar_t *p_value,
+                                   const int64_t *data_spatial_shapes,
+                                   const int64_t *data_level_start_index,
+                                   const scalar_t *p_offset, scalar_t *p_output,
+                                   const int N, const int G, const int D,
+                                   const int Q, const int block_multiplier) {
 
   const int &qi = (blockIdx.x * block_multiplier % Q) + threadIdx.z;
   const int &bi = blockIdx.x * block_multiplier / Q;
@@ -140,12 +141,12 @@ forward_kernel_reg(const scalar_t *p_value, const int64_t *data_spatial_shapes,
   const int &gi = threadIdx.y;
 
   opmath_t p_out_shm[d_stride] = {0.};
-  opmath_t p_mask_shm[L*K] = {0.};
+  opmath_t p_mask_shm[L * K] = {0.};
 
   const scalar_t *p_offset_ptr =
       p_offset + (((bi * Q + qi) * G + gi) * L) * K * 3;
 
-  for (int i=0; i < L*K; i++){
+  for (int i = 0; i < L * K; i++) {
     p_mask_shm[i] = *(p_offset_ptr + L * K * 2 + i);
   }
 
@@ -209,22 +210,22 @@ forward_kernel_reg(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 }
 
 template <typename scalar_t, typename stride_type, int K, int d_stride>
-void _flash_deformable_im2col_cuda(
-    cudaStream_t stream,
-    const scalar_t *value,                 // B, N, G, D
-    const int64_t *data_spatial_shapes,    // L * 2
-    const int64_t *data_level_start_index, // L
-    const scalar_t *offset,                // B, N, G, L, K, 3
-    scalar_t *output,                      // B, N, G, D
-    const int B, const int N, const int G, const int D, const int L,
-    const int Q, const int block_thread, 
-    const bool _use_reg) {
+void _flash_deformable_im2col_cuda(cudaStream_t stream,
+                                   const scalar_t *value, // B, N, G, D
+                                   const int64_t *data_spatial_shapes, // L * 2
+                                   const int64_t *data_level_start_index, // L
+                                   const scalar_t *offset, // B, N, G, L, K, 3
+                                   scalar_t *output,       // B, N, G, D
+                                   const int B, const int N, const int G,
+                                   const int D, const int L, const int Q,
+                                   const int block_thread,
+                                   const bool _use_reg) {
 
   assert(D % d_stride == 0);
 
-  const int block_multiplier = block_thread / (D / d_stride) / G;;
-  assert((B*Q) % block_multiplier == 0);
-  dim3 num_blocks(B*Q / block_multiplier);
+  const int block_multiplier = block_thread / (D / d_stride) / G;
+  assert((B * Q) % block_multiplier == 0);
+  dim3 num_blocks(B * Q / block_multiplier);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   const int shm_size = 0;
@@ -280,13 +281,12 @@ void flash_deformable_im2col_cuda_inner(
     const scalar_t *offset,                // B, N, G, L, K, 3
     scalar_t *output,                      // B, N, G, D
     const int B, const int N, const int G, const int D, const int L,
-    const int Q, const int d_stride, 
-    const int block_thread,
+    const int Q, const int d_stride, const int block_thread,
     const bool _use_reg) {
-  
+
   assert(D % d_stride == 0);
-  if(sizeof(scalar_t) == 2) {
-    switch(d_stride) {
+  if (sizeof(scalar_t) == 2) {
+    switch (d_stride) {
     case 1:
       _flash_deformable_im2col_cuda<scalar_t, scalar_t, K, 1>(
           stream,
@@ -295,9 +295,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 2:
       _flash_deformable_im2col_cuda<scalar_t, uint, K, 2>(
@@ -307,9 +305,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 4:
       _flash_deformable_im2col_cuda<scalar_t, uint2, K, 4>(
@@ -319,9 +315,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 8:
       _flash_deformable_im2col_cuda<scalar_t, uint4, K, 8>(
@@ -331,9 +325,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 16:
       _flash_deformable_im2col_cuda<scalar_t, ulonglong4, K, 16>(
@@ -343,9 +335,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     default:
       printf("not supported for d_stride > 16 for fp16");
@@ -353,7 +343,7 @@ void flash_deformable_im2col_cuda_inner(
     }
   } else {
     assert(sizeof(scalar_t) == 4);
-    switch(d_stride) {
+    switch (d_stride) {
     case 1:
       _flash_deformable_im2col_cuda<scalar_t, scalar_t, K, 1>(
           stream,
@@ -362,9 +352,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 2:
       _flash_deformable_im2col_cuda<scalar_t, uint2, K, 2>(
@@ -374,9 +362,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 4:
       _flash_deformable_im2col_cuda<scalar_t, uint4, K, 4>(
@@ -386,9 +372,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     case 8:
       _flash_deformable_im2col_cuda<scalar_t, ulonglong4, K, 8>(
@@ -398,9 +382,7 @@ void flash_deformable_im2col_cuda_inner(
           data_level_start_index, // L
           offset,                 // B, N, G, L, K, 3
           output,                 // B, N, G, D
-          B, N, G, D, L, Q,
-          block_thread,
-          _use_reg);
+          B, N, G, D, L, Q, block_thread, _use_reg);
       break;
     default:
       printf("not supported for d_stride > 8 for fp32");
@@ -410,17 +392,16 @@ void flash_deformable_im2col_cuda_inner(
 }
 
 template <typename scalar_t>
-void flash_deformable_im2col_cuda(
-    cudaStream_t stream,
-    const scalar_t *value,                 // B, N, G, D
-    const int64_t *data_spatial_shapes,    // L * 2
-    const int64_t *data_level_start_index, // L
-    const scalar_t *offset,                // B, N, G, L, K, 3
-    scalar_t *output,                      // B, N, G, D
-    const int B, const int N, const int G, const int D, const int L,
-    const int Q, const int K, const int d_stride, 
-    const int block_thread,
-    const bool _use_reg) {
+void flash_deformable_im2col_cuda(cudaStream_t stream,
+                                  const scalar_t *value, // B, N, G, D
+                                  const int64_t *data_spatial_shapes, // L * 2
+                                  const int64_t *data_level_start_index, // L
+                                  const scalar_t *offset, // B, N, G, L, K, 3
+                                  scalar_t *output,       // B, N, G, D
+                                  const int B, const int N, const int G,
+                                  const int D, const int L, const int Q,
+                                  const int K, const int d_stride,
+                                  const int block_thread, const bool _use_reg) {
   switch (K) {
   case 4:
     flash_deformable_im2col_cuda_inner<scalar_t, 4>(
@@ -430,8 +411,7 @@ void flash_deformable_im2col_cuda(
         data_level_start_index, // L
         offset,                 // B, N, G, L, K, 3
         output,                 // B, N, G, D
-        B, N, G, D, L, Q, d_stride, 
-        block_thread, _use_reg);
+        B, N, G, D, L, Q, d_stride, block_thread, _use_reg);
     break;
   case 8:
     flash_deformable_im2col_cuda_inner<scalar_t, 8>(
@@ -441,8 +421,7 @@ void flash_deformable_im2col_cuda(
         data_level_start_index, // L
         offset,                 // B, N, G, L, K, 3
         output,                 // B, N, G, D
-        B, N, G, D, L, Q, d_stride,
-        block_thread, _use_reg);
+        B, N, G, D, L, Q, d_stride, block_thread, _use_reg);
     break;
   default:
     printf("not supported for K not in [4, 8]");

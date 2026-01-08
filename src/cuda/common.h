@@ -9,9 +9,7 @@
 
 #include <THC/THCAtomics.cuh>
 
-#include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
-#include <ATen/cuda/CUDAContext.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda.h>
@@ -30,10 +28,10 @@ inline int GET_BLOCKS(const int N, const int num_threads) {
 }
 
 #define CUDA_KERNEL_LOOP(i, n)                                                 \
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n);                 \
-       i += blockDim.x * gridDim.x)
+  for (int(i) = blockIdx.x * blockDim.x + threadIdx.x; (i) < (n);              \
+       (i) += blockDim.x * gridDim.x)
 
-inline bool check_backward_warpp(int d_stride, int D){
+inline bool check_backward_warpp(int d_stride, int D) {
   int n_group_threads = D / d_stride;
   return (n_group_threads <= kWarpSize) && (kWarpSize % n_group_threads == 0);
 }
@@ -210,7 +208,5 @@ __device__ void ms_deform_attn_col2im_bilinear(
   }
   *(grad_offset + 2) = _grad_offset_z;
 }
-
-
 
 #endif
