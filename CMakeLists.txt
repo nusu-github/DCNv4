@@ -14,8 +14,8 @@ find_package(Torch REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
 # Sources
-file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cu")
-set(CPP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/vision.cpp")
+file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/dcnv4/csrc/cuda/*.cu")
+set(CPP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/dcnv4/csrc/ops.cpp")
 
 # Extension module
 Python_add_library(dcnv4_C MODULE ${CPP_SOURCES} ${CUDA_SOURCES} WITH_SOABI)
@@ -27,7 +27,7 @@ set_property(TARGET dcnv4_C PROPERTY CUDA_STANDARD 17)
 
 # Includes (do not quote list vars)
 target_include_directories(dcnv4_C PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/dcnv4/csrc"
   ${TORCH_INCLUDE_DIRS}
 )
 

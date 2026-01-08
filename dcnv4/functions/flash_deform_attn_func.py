@@ -10,7 +10,7 @@
 import torch
 import torch.library
 
-from dcnv4 import _ops
+from dcnv4 import ops
 
 # Shared memory capacity per GPU architecture (in bytes)
 shm_size_dict = {
@@ -80,7 +80,7 @@ def flash_deform_attn(
         value.shape[3],
     )
 
-    return _ops.dcnv4_C.flash_deform_attn_forward(
+    return ops.flash_deform_attn_forward(
         value,
         value_spatial_shapes,
         value_level_start_index,
@@ -120,7 +120,7 @@ def flash_deform_attn_backward(ctx, grad_output):
         value.shape[3],
     )
 
-    grad_value, grad_sampling_loc_attn = _ops.dcnv4_C.flash_deform_attn_backward(
+    grad_value, grad_sampling_loc_attn = ops.flash_deform_attn_backward(
         value,
         value_spatial_shapes,
         value_level_start_index,

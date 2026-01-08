@@ -35,7 +35,7 @@ Kernel Configuration:
 import torch
 import torch.library
 
-from dcnv4 import _ops
+from dcnv4 import ops
 
 from .table import BWDTABLE, TABLE
 
@@ -110,7 +110,7 @@ def dcnv4_forward(
         group_channels,
     )
 
-    return _ops.dcnv4_C.dcnv4_forward(
+    return ops.dcnv4_forward(
         input,
         offset_mask,
         kernel_h,
@@ -182,7 +182,7 @@ def dcnv4_backward(ctx, grad_output):
         group_channels,
     )
 
-    grad_input, grad_offset_mask = _ops.dcnv4_C.dcnv4_backward(
+    grad_input, grad_offset_mask = ops.dcnv4_backward(
         input,
         offset_mask,
         kernel_h,

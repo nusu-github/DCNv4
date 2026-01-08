@@ -36,14 +36,7 @@ References:
 
 """
 
-from typing import TYPE_CHECKING
-
-from dcnv4 import dcnv4_C  # ty:ignore[unresolved-import]  # noqa: F401
-
 from .functions import dcnv4_forward, flash_deform_attn
 from .modules import FlashDeformAttn, dcnv4
-
-if TYPE_CHECKING:
-    from . import _ops
 
 __all__ = ["FlashDeformAttn", "dcnv4", "dcnv4_forward", "flash_deform_attn"]
