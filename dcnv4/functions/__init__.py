@@ -32,5 +32,13 @@ Backend Selection:
 from .dcnv4_func import dcnv4_forward
 from .dcnv4_pytorch import dcnv4_forward_pytorch
 from .flash_deform_attn_func import flash_deform_attn
+from .utils import compute_offset_mask_channels, factors, is_power_of_2
 
-__all__ = ["dcnv4_forward", "dcnv4_forward_pytorch", "flash_deform_attn"]
+__all__ = [
+    "compute_offset_mask_channels",
+    "dcnv4_forward",
+    "dcnv4_forward_pytorch",
+    "factors",
+    "flash_deform_attn",
+    "is_power_of_2",
+]

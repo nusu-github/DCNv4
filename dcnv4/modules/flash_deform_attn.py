@@ -37,18 +37,7 @@ from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
 
 from dcnv4.functions.flash_deform_attn_func import flash_deform_attn
-
-
-def _is_power_of_2(n):
-    """Check if n is a power of 2.
-
-    Power-of-2 dimensions are more efficient for CUDA kernels due to
-    better memory alignment and vectorized load/store operations.
-    """
-    if (not isinstance(n, int)) or (n < 0):
-        msg = f"invalid input for _is_power_of_2: {n} (type: {type(n)})"
-        raise ValueError(msg)
-    return (n & (n - 1) == 0) and n != 0
+from dcnv4.functions.utils import is_power_of_2
 
 
 class FlashDeformAttn(nn.Module):
@@ -108,7 +97,7 @@ class FlashDeformAttn(nn.Module):
             raise ValueError(msg)
         _d_per_head = d_model // n_heads
         # you'd better set _d_per_head to a power of 2 which is more efficient in our CUDA implementation
-        if not _is_power_of_2(_d_per_head):
+        if not is_power_of_2(_d_per_head):
             warnings.warn(
                 "You'd better set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
                 "which is more efficient in our CUDA implementation.",

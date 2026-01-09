@@ -12,31 +12,7 @@ import torch.library
 
 from dcnv4 import ops
 
-# Shared memory capacity per GPU architecture (in bytes)
-shm_size_dict = {
-    "8.0": 163000,  # A100
-    "8.6": 99000,  # RTX 30xx
-    "8.7": 163000,  # Jetson Orin
-    "8.9": 99000,  # RTX 40xx
-    "9.0": 227000,  # H100
-    "7.5": 64000,  # Turing
-    "7.0": 96000,  # V100
-}
-
-if torch.cuda.is_available():
-    cuda_capability = f"{torch.cuda.get_device_properties(0).major}.{torch.cuda.get_device_properties(0).minor}"
-    shm_size_cap = shm_size_dict.get(cuda_capability, 96000)
-else:
-    shm_size_cap = 96000
-
-
-def factors(N):
-    """Compute all factors of N."""
-    res = []
-    for i in range(1, N + 1):
-        if N % i == 0:
-            res.append(i)
-    return res
+from .utils import factors
 
 
 def findspec(B, Q, G, C):
@@ -51,7 +27,7 @@ def findspec(B, Q, G, C):
     return d_stride, n_thread
 
 
-def findspec_bwd(B, Q, G, C):
+def find_spec_bwd(B, Q, G, C):
     """Find optimal kernel configuration for backward pass."""
     d_stride = 2 if C >= 64 else 1
     ms = factors(B * Q)
@@ -113,7 +89,7 @@ def flash_deform_attn_backward(ctx, grad_output):
     im2col_step = ctx.im2col_step
     K = ctx.K
 
-    d_stride_backward, blockthread_backward = findspec_bwd(
+    d_stride_backward, blockthread_backward = find_spec_bwd(
         value.shape[0],
         sampling_loc_attn.shape[1],
         value.shape[2],

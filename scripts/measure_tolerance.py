@@ -18,7 +18,6 @@ Output:
 
 import argparse
 import json
-import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -28,6 +27,7 @@ from pathlib import Path
 import torch
 
 from dcnv4 import ops
+from dcnv4.functions import compute_offset_mask_channels
 from dcnv4.functions.dcnv4_func import dcnv4_forward, find_spec_bwd
 from dcnv4.functions.dcnv4_pytorch import dcnv4_forward_pytorch
 from dcnv4.functions.table import TABLE
@@ -134,17 +134,6 @@ class HalfPrecisionMeasurement:
 # =============================================================================
 # Helper functions
 # =============================================================================
-
-
-def compute_offset_mask_channels(
-    group: int,
-    kernel_size: int,
-    remove_center: int = 0,
-) -> int:
-    """Compute padded offset_mask channels (divisible by 8)."""
-    k_points = kernel_size * kernel_size - remove_center
-    total = group * k_points * 3
-    return int(math.ceil(total / 8) * 8)
 
 
 def compute_error_stats(

@@ -12,29 +12,12 @@ opcheck tests the following:
 Reference: https://pytorch.org/docs/stable/library.html#torch.library.opcheck
 """
 
-import math
-
 import pytest
 import torch
 
+from dcnv4.functions import compute_offset_mask_channels
 from dcnv4.functions.dcnv4_func import dcnv4_forward
 from dcnv4.functions.flash_deform_attn_func import flash_deform_attn
-
-
-def compute_offset_mask_channels(
-    group: int,
-    kernel_size: int,
-    remove_center: int = 0,
-) -> int:
-    """Compute the padded offset_mask channel dimension.
-
-    The offset_mask contains offsets (2 per point) + weights (1 per point) for each group.
-    The total is padded to be divisible by 8 for tensor core requirements.
-    """
-    K = kernel_size * kernel_size - remove_center
-    total = group * K * 3
-    return int(math.ceil(total / 8) * 8)
-
 
 # Skip all tests if CUDA is not available
 pytestmark = pytest.mark.skipif(

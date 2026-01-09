@@ -22,13 +22,12 @@ Note: rtol is not used because relative error explodes for near-zero values
 (observed max_rel > 30 due to division by small reference values).
 """
 
-import math
-
 import pytest
 import torch
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from dcnv4.functions import compute_offset_mask_channels
 from dcnv4.functions.dcnv4_func import dcnv4_forward
 from dcnv4.functions.dcnv4_pytorch import dcnv4_forward_pytorch
 from dcnv4.functions.table import TABLE
@@ -57,17 +56,6 @@ SELF_CONSISTENCY_ATOL = 1e-5
 
 # Out-of-bounds tests (output should be exactly zero)
 OOB_ATOL = 1e-6
-
-
-def compute_offset_mask_channels(
-    group: int,
-    kernel_size: int,
-    remove_center: int = 0,
-) -> int:
-    """Compute padded offset_mask channels (divisible by 8)."""
-    k_points = kernel_size * kernel_size - remove_center
-    total = group * k_points * 3
-    return int(math.ceil(total / 8) * 8)
 
 
 def _valid_shapes() -> list[tuple[int, int, int, int, int]]:

@@ -21,5 +21,11 @@ backward passes, with optional Triton-based implementations for portability.
 
 from .dcnv4 import dcnv4
 from .flash_deform_attn import FlashDeformAttn
+from .flash_deform_attn_torch import FlashDeformAttnTorch, flash_deform_attn_torch
 
-__all__ = ["FlashDeformAttn", "dcnv4"]
+__all__ = [
+    "FlashDeformAttn",
+    "FlashDeformAttnTorch",
+    "dcnv4",
+    "flash_deform_attn_torch",
+]

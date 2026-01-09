@@ -367,7 +367,7 @@ def measure_backward_nondeterminism(
     Returns (max_diff_value, max_diff_sampling).
     """
     from dcnv4 import ops
-    from dcnv4.functions.flash_deform_attn_func import findspec_bwd
+    from dcnv4.functions.flash_deform_attn_func import find_spec_bwd
 
     B, Q, n_heads, head_dim, n_levels, n_points = shape
 
@@ -383,7 +383,7 @@ def measure_backward_nondeterminism(
     grad_output = torch.randn_like(out)
 
     # Get backward kernel config
-    d_stride_bwd, blockthread_bwd = findspec_bwd(B, Q, n_heads, head_dim)
+    d_stride_bwd, blockthread_bwd = find_spec_bwd(B, Q, n_heads, head_dim)
 
     # Run backward multiple times
     grad_values: list[torch.Tensor] = []

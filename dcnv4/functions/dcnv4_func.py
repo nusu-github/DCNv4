@@ -38,15 +38,7 @@ import torch.library
 from dcnv4 import ops
 
 from .table import BWDTABLE, TABLE
-
-
-def factors(N):
-    """Compute all factors of N."""
-    res = []
-    for i in range(1, N + 1):
-        if N % i == 0:
-            res.append(i)
-    return res
+from .utils import factors
 
 
 def findspec(B, H, W, G, C):
