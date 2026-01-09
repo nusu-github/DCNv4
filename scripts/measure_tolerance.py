@@ -16,8 +16,6 @@ Output:
     - JSON file: Full measurement data for future reference
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import math
@@ -28,10 +26,6 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from dcnv4 import ops
 from dcnv4.functions.dcnv4_func import dcnv4_forward, find_spec_bwd
@@ -165,8 +159,8 @@ def compute_error_stats(
     max_abs = abs_err.max().item()
     mean_abs = abs_err.mean().item()
 
-    # Relative error (avoid division by zero)
-    nonzero_mask = ref_float.abs() > 1e-8
+    # Relative error (filter small ref values to avoid misleading statistics)
+    nonzero_mask = ref_float.abs() > 0.01
     num_nonzero = nonzero_mask.sum().item()
 
     if num_nonzero > 0:

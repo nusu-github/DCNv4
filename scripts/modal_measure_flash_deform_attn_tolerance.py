@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run scripts/measure_tolerance.py on Modal (GPU) and save results locally.
+"""Run scripts/measure_flash_deform_attn_tolerance.py on Modal (GPU) and save results locally.
 
 This is intended for one-off empirical tolerance measurement when you don't have
 a suitable local CUDA environment.
@@ -9,7 +9,7 @@ Prereqs (local machine):
   - `modal setup`
 
 Usage:
-  modal run scripts/modal_measure_tolerance.py --seeds 200 --output tolerance.json
+  modal run scripts/modal_measure_flash_deform_attn_tolerance.py --seeds 200 --output tolerance.json
 
 Notes:
   - This builds DCNv4 inside a CUDA *devel* image (nvcc available).
@@ -22,10 +22,10 @@ from pathlib import Path
 
 import modal
 
-APP_NAME = "dcnv4-measure-tolerance"
+APP_NAME = "dcnv4-measure-flash-deform-attn-tolerance"
 
 # Persist results inside Modal as well (optional convenience).
-RESULTS_VOLUME_NAME = "dcnv4-tolerance-results"
+RESULTS_VOLUME_NAME = "dcnv4-flash-deform-attn-tolerance-results"
 RESULTS_DIR = "/root/results"
 
 results_volume = modal.Volume.from_name(
@@ -53,13 +53,7 @@ base_image = (
     .add_local_dir(
         ".",
         "/root/DCNv4",
-        ignore=[
-            "**/.git/**",
-            "**/.venv/**",
-            "**/__pycache__/**",
-            "**/build/**",
-            "**/.ruff_cache/**",
-        ],
+        ignore=[".cache", ".git", ".venv", "__pycache__", "build", ".ruff_cache"],
         copy=True,
     )
     .run_commands(
@@ -82,7 +76,6 @@ def run_measurement(
     *,
     seeds: int,
     output_name: str,
-    no_softmax: bool,
     no_half: bool,
 ) -> dict:
     import subprocess
@@ -91,14 +84,12 @@ def run_measurement(
 
     cmd = [
         "python",
-        "/root/DCNv4/scripts/measure_tolerance.py",
+        "/root/DCNv4/scripts/measure_flash_deform_attn_tolerance.py",
         "--seeds",
         str(seeds),
         "--output",
         str(out_path),
     ]
-    if no_softmax:
-        cmd.append("--no-softmax")
     if no_half:
         cmd.append("--no-half")
 
@@ -112,9 +103,8 @@ def run_measurement(
 
 @app.local_entrypoint()
 def main(
-    seeds: int = 500,
-    output: str = "tolerance_measurements.json",
-    no_softmax: bool = False,
+    seeds: int = 200,
+    output: str = "flash_deform_attn_tolerance_measurements.json",
     no_half: bool = False,
 ) -> None:
     output_path = Path(output)
@@ -123,7 +113,6 @@ def main(
     res = run_measurement.remote(
         seeds=seeds,
         output_name=output_path.name,
-        no_softmax=no_softmax,
         no_half=no_half,
     )
 

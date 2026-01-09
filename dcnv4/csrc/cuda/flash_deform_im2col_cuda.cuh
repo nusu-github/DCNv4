@@ -21,8 +21,9 @@ forward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 
   extern __shared__ char _s[];
 
-  const int &qi = (blockIdx.x * block_multiplier % Q) + threadIdx.z;
-  const int &bi = blockIdx.x * block_multiplier / Q;
+  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = global_idx / Q;
+  const int qi = global_idx % Q;
 
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
@@ -119,8 +120,9 @@ __global__ void forward_kernel_reg(const scalar_t *p_value,
                                    const int N, const int G, const int D,
                                    const int Q, const int block_multiplier) {
 
-  const int &qi = (blockIdx.x * block_multiplier % Q) + threadIdx.z;
-  const int &bi = blockIdx.x * block_multiplier / Q;
+  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = global_idx / Q;
+  const int qi = global_idx % Q;
 
   const int &di_s = threadIdx.x * d_stride;
   const int &gi = threadIdx.y;
