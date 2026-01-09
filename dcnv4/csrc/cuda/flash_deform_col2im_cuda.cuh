@@ -4,20 +4,23 @@
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void
-backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
-                const int64_t *data_level_start_index, const scalar_t *p_offset,
-                const scalar_t *grad_output, const int N, const int G,
-                const int D, const int Q, const int block_multiplier,
-                opmath_t *grad_im, opmath_t *grad_offset) {
+backward_kernel(const scalar_t *__restrict__ p_value,
+                const int64_t *__restrict__ data_spatial_shapes,
+                const int64_t *__restrict__ data_level_start_index,
+                const scalar_t *__restrict__ p_offset,
+                const scalar_t *__restrict__ grad_output, const int N,
+                const int G, const int D, const int Q,
+                const int block_multiplier, opmath_t *__restrict__ grad_im,
+                opmath_t *__restrict__ grad_offset) {
 
   extern __shared__ char _s[];
 
-  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
-  const int bi = global_idx / Q;
-  const int qi = global_idx % Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   opmath_t *cache_g_mask_before_softmax =
       (opmath_t *)(_s); // (block_multiplier*G) * (L * K)
@@ -61,7 +64,7 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 
     // get sumexp
     for (int j = 0; j < L * K; j++) {
-      opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+      opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
       p_mask_shm[j] = exp_results;
       softmax_sum += exp_results;
     }
@@ -124,7 +127,8 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
           grad_offset[((bi * Q + qi) * G + gi) * L * K * 3 + li * K * 2 +
                       ki * 2 + 1] = _grad_h;
           cache_g_mask_before_softmax
-              [((threadIdx.y + threadIdx.z * G) * L + li) * K + ki] = _grad_a;
+              [((threadIdx.y + threadIdx.z * G) * L + li) * K + ki] =
+                  _grad_a * attn;
         }
       }
       __syncthreads();
@@ -134,20 +138,19 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
     }
   }
   // backward for softmax
+  // grad_input[i] = softmax[i] * (grad_output[i] - sum(grad_output * softmax))
+  // Since group_g_mask[i] = grad_output[i] * softmax[i], this simplifies to:
+  // grad_input[i] = group_g_mask[i] - softmax[i] * sum(group_g_mask)
   if (threadIdx.x == 0) {
+    const opmath_t *group_g_mask =
+        cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
+    opmath_t sum = 0.;
+    for (int j = 0; j < L * K; ++j) {
+      sum += group_g_mask[j];
+    }
     for (int i = 0; i < L * K; ++i) {
-      opmath_t grad_i = 0.;
-      const opmath_t *group_g_mask =
-          cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
-      for (int j = 0; j < L * K; ++j) {
-        if (i != j) {
-          grad_i -= group_g_mask[j] * p_mask_shm[i] * p_mask_shm[j];
-        } else {
-          grad_i += group_g_mask[i] * p_mask_shm[i] * (1 - p_mask_shm[i]);
-        }
-      }
       grad_offset[((bi * Q + qi) * G + gi) * L * K * 3 + L * K * 2 + i] =
-          grad_i;
+          group_g_mask[i] - p_mask_shm[i] * sum;
     }
   }
   __syncthreads();
@@ -155,20 +158,22 @@ backward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void backward_kernel_warp_primitive(
-    const scalar_t *p_value, const int64_t *data_spatial_shapes,
-    const int64_t *data_level_start_index, const scalar_t *p_offset,
-    const scalar_t *grad_output, const int N, const int G, const int D,
-    const int Q, const int block_multiplier, opmath_t *grad_im,
-    opmath_t *grad_offset) {
+    const scalar_t *__restrict__ p_value,
+    const int64_t *__restrict__ data_spatial_shapes,
+    const int64_t *__restrict__ data_level_start_index,
+    const scalar_t *__restrict__ p_offset,
+    const scalar_t *__restrict__ grad_output, const int N, const int G,
+    const int D, const int Q, const int block_multiplier,
+    opmath_t *__restrict__ grad_im, opmath_t *__restrict__ grad_offset) {
 
   extern __shared__ char _s[];
 
-  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
-  const int bi = global_idx / Q;
-  const int qi = global_idx % Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   const int group_per_warp = kWarpSize / blockDim.x;
   const int group_in_warp_id = (threadIdx.z * G + threadIdx.y) % group_per_warp;
@@ -214,7 +219,7 @@ __global__ void backward_kernel_warp_primitive(
 
     // get sumexp
     for (int j = 0; j < L * K; j++) {
-      opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+      opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
       p_mask_shm[j] = exp_results;
       softmax_sum += exp_results;
     }
@@ -274,7 +279,7 @@ __global__ void backward_kernel_warp_primitive(
                       ki * 2 + 1] = reg_grad_offset[1];
           cache_g_mask_before_softmax
               [((threadIdx.y + threadIdx.z * G) * L + li) * K + ki] =
-                  reg_grad_offset[2];
+                  reg_grad_offset[2] * attn;
         }
       }
       __syncthreads();
@@ -284,20 +289,19 @@ __global__ void backward_kernel_warp_primitive(
     }
   }
   // backward for softmax
+  // grad_input[i] = softmax[i] * (grad_output[i] - sum(grad_output * softmax))
+  // Since group_g_mask[i] = grad_output[i] * softmax[i], this simplifies to:
+  // grad_input[i] = group_g_mask[i] - softmax[i] * sum(group_g_mask)
   if (threadIdx.x == 0) {
+    const opmath_t *group_g_mask =
+        cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
+    opmath_t sum = 0.;
+    for (int j = 0; j < L * K; ++j) {
+      sum += group_g_mask[j];
+    }
     for (int i = 0; i < L * K; ++i) {
-      opmath_t grad_i = 0.;
-      const opmath_t *group_g_mask =
-          cache_g_mask_before_softmax + (threadIdx.y + threadIdx.z * G) * L * K;
-      for (int j = 0; j < L * K; ++j) {
-        if (i != j) {
-          grad_i -= group_g_mask[j] * p_mask_shm[i] * p_mask_shm[j];
-        } else {
-          grad_i += group_g_mask[i] * p_mask_shm[i] * (1 - p_mask_shm[i]);
-        }
-      }
       grad_offset[((bi * Q + qi) * G + gi) * L * K * 3 + L * K * 2 + i] =
-          grad_i;
+          group_g_mask[i] - p_mask_shm[i] * sum;
     }
   }
   __syncthreads();
@@ -323,14 +327,15 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
               block_multiplier, " (block_thread=", block_thread, ", D=", D,
               ", d_stride=", d_stride, ", G=", G,
               "). Try increasing block_thread or d_stride.");
-  TORCH_CHECK((B * Q) % block_multiplier == 0,
-              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
-              Q, ") % ", block_multiplier, " != 0");
-  dim3 num_blocks(B * Q / block_multiplier);
+  TORCH_CHECK(Q % block_multiplier == 0,
+              "Q must be divisible by block_multiplier: ", Q, " % ",
+              block_multiplier, " != 0");
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  dim3 num_blocks(Q / block_multiplier, B);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   int shm_size;
-  if (check_backward_warpp(d_stride, D)) {
+  if (check_backward_warp(d_stride, D)) {
     shm_size = sizeof(opmath_t) * (block_multiplier * G * L * K) +
                sizeof(opmath_t) * (G * block_multiplier * L * K);
   } else {
@@ -344,7 +349,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
 
   switch (L) {
   case 1:
-    if (check_backward_warpp(d_stride, D)) {
+    if (check_backward_warp(d_stride, D)) {
       kernel =
           backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 1, K>;
     } else {
@@ -352,7 +357,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
     }
     break;
   case 2:
-    if (check_backward_warpp(d_stride, D)) {
+    if (check_backward_warp(d_stride, D)) {
       kernel =
           backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 2, K>;
     } else {
@@ -360,7 +365,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
     }
     break;
   case 3:
-    if (check_backward_warpp(d_stride, D)) {
+    if (check_backward_warp(d_stride, D)) {
       kernel =
           backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 3, K>;
     } else {
@@ -368,7 +373,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
     }
     break;
   case 4:
-    if (check_backward_warpp(d_stride, D)) {
+    if (check_backward_warp(d_stride, D)) {
       kernel =
           backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 4, K>;
     } else {
@@ -376,7 +381,7 @@ void _flash_deformable_col2im_cuda(cudaStream_t stream,
     }
     break;
   case 5:
-    if (check_backward_warpp(d_stride, D)) {
+    if (check_backward_warp(d_stride, D)) {
       kernel =
           backward_kernel_warp_primitive<scalar_t, d_stride, stride_type, 5, K>;
     } else {

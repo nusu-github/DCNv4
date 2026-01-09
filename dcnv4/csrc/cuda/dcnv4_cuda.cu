@@ -16,6 +16,7 @@
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda.h>
@@ -34,6 +35,16 @@ at::Tensor dcnv4_cuda_forward(
   TORCH_CHECK(value.is_cuda(), "input must be a CUDA tensor");
   TORCH_CHECK(p_offset.is_contiguous(), "input tensor has to be contiguous");
   TORCH_CHECK(p_offset.is_cuda(), "input must be a CUDA tensor");
+
+  // Type and shape validation
+  TORCH_CHECK(value.scalar_type() == p_offset.scalar_type(),
+              "value and p_offset must have the same dtype");
+  TORCH_CHECK(value.device() == p_offset.device(),
+              "value and p_offset must be on the same device");
+  TORCH_CHECK(kernel_h > 0 && kernel_w > 0,
+              "kernel dimensions must be positive");
+
+  at::cuda::CUDAGuard device_guard(value.device());
 
   const int batch = value.size(0);
   const int height_in = value.size(1);
@@ -101,6 +112,19 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
   TORCH_CHECK(p_offset.is_cuda(), "offset must be a CUDA tensor");
   TORCH_CHECK(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
 
+  // Type and shape validation
+  TORCH_CHECK(value.scalar_type() == p_offset.scalar_type(),
+              "value and p_offset must have the same dtype");
+  TORCH_CHECK(value.scalar_type() == grad_output.scalar_type(),
+              "value and grad_output must have the same dtype");
+  TORCH_CHECK(value.device() == p_offset.device() &&
+                  value.device() == grad_output.device(),
+              "All tensors must be on the same device");
+  TORCH_CHECK(kernel_h > 0 && kernel_w > 0,
+              "kernel dimensions must be positive");
+
+  at::cuda::CUDAGuard device_guard(value.device());
+
   const int batch = value.size(0);
   const int height_in = value.size(1);
   const int width_in = value.size(2);
@@ -121,7 +145,7 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
               channels, " vs ", group * group_channels, ").");
 
   auto dtype = value.dtype();
-  if (dtype == at::kHalf) {
+  if (dtype == at::kHalf || dtype == at::kBFloat16) {
     dtype = at::kFloat;
   }
 
@@ -153,6 +177,8 @@ dcnv4_cuda_backward(const at::Tensor &value, const at::Tensor &p_offset,
 
   if (value.dtype() == at::kHalf) {
     return {grad_input.to(at::kHalf), grad_offset.to(at::kHalf)};
+  } else if (value.dtype() == at::kBFloat16) {
+    return {grad_input.to(at::kBFloat16), grad_offset.to(at::kBFloat16)};
   } else {
     return {grad_input, grad_offset};
   }

@@ -60,7 +60,6 @@ target_compile_options(dcnv4_C PRIVATE
     -lineinfo
     --expt-relaxed-constexpr
     --extended-lambda
-    --use_fast_math
   >
   $<$<COMPILE_LANGUAGE:CXX>:
     $<$<CONFIG:Release>:-O3>

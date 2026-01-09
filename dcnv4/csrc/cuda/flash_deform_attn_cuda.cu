@@ -16,6 +16,7 @@
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda.h>
@@ -44,6 +45,16 @@ at::Tensor flash_deform_attn_cuda_forward(const at::Tensor &value,
               "level_start_index must be a CUDA tensor");
   TORCH_CHECK(sampling_loc_attn.is_cuda(),
               "sampling_loc_attn must be a CUDA tensor");
+
+  // Type and shape validation
+  TORCH_CHECK(value.scalar_type() == sampling_loc_attn.scalar_type(),
+              "value and sampling_loc_attn must have the same dtype");
+  TORCH_CHECK(value.device() == spatial_shapes.device() &&
+                  value.device() == level_start_index.device() &&
+                  value.device() == sampling_loc_attn.device(),
+              "All tensors must be on the same device");
+
+  at::cuda::CUDAGuard device_guard(value.device());
 
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
@@ -104,6 +115,19 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
               "sampling_loc_attn must be a CUDA tensor");
   TORCH_CHECK(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
 
+  // Type and shape validation
+  TORCH_CHECK(value.scalar_type() == sampling_loc_attn.scalar_type(),
+              "value and sampling_loc_attn must have the same dtype");
+  TORCH_CHECK(value.scalar_type() == grad_output.scalar_type(),
+              "value and grad_output must have the same dtype");
+  TORCH_CHECK(value.device() == spatial_shapes.device() &&
+                  value.device() == level_start_index.device() &&
+                  value.device() == sampling_loc_attn.device() &&
+                  value.device() == grad_output.device(),
+              "All tensors must be on the same device");
+
+  at::cuda::CUDAGuard device_guard(value.device());
+
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
   const int num_heads = value.size(2);
@@ -114,7 +138,7 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
   const int num_point = K;
 
   auto dtype = value.dtype();
-  if (dtype == at::kHalf) {
+  if (dtype == at::kHalf || dtype == at::kBFloat16) {
     dtype = at::kFloat;
   }
 
@@ -148,6 +172,8 @@ std::vector<at::Tensor> flash_deform_attn_cuda_backward(
   if (value.dtype() == at::kHalf) {
     grad_offset = grad_offset.clamp(-65504.0, 65504.0);
     return {grad_input.to(at::kHalf), grad_offset.to(at::kHalf)};
+  } else if (value.dtype() == at::kBFloat16) {
+    return {grad_input.to(at::kBFloat16), grad_offset.to(at::kBFloat16)};
   } else {
     return {grad_input, grad_offset};
   }

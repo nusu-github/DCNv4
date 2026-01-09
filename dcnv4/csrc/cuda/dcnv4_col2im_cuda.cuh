@@ -5,22 +5,24 @@
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K,
           bool softmax>
 __global__ void backward_kernel_dcn(
-    const scalar_t *p_value, const scalar_t *p_offset,
-    const scalar_t *grad_output, const int G, const int D, const int Q,
-    const int kernel_h, const int kernel_w, const int stride_h,
+    const scalar_t *__restrict__ p_value, const scalar_t *__restrict__ p_offset,
+    const scalar_t *__restrict__ grad_output, const int G, const int D,
+    const int Q, const int kernel_h, const int kernel_w, const int stride_h,
     const int stride_w, const int pad_h, const int pad_w, const int dilation_h,
     const int dilation_w, const int height_in, const int width_in,
     const int height_out, const int width_out, const opmath_t offset_scale,
-    const int remove_center, const int block_multiplier, opmath_t *grad_im,
-    opmath_t *grad_offset, const int padded_offset_dim) {
+    const int remove_center, const int block_multiplier,
+    opmath_t *__restrict__ grad_im, opmath_t *__restrict__ grad_offset,
+    const int padded_offset_dim) {
 
   extern __shared__ char _s[];
 
-  const int &qi = (blockIdx.x * block_multiplier % Q) + threadIdx.z;
-  const int &bi = blockIdx.x * block_multiplier / Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   opmath_t *const cache_g_mask_before_softmax = (opmath_t *)(_s); // mG x K
   opmath_t *const cache_grad_offset =
@@ -66,7 +68,7 @@ __global__ void backward_kernel_dcn(
 
       // get sumexp
       for (int j = 0; j < K; j++) {
-        opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+        opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
         p_mask_shm[j] = exp_results;
         softmax_sum += exp_results;
       }
@@ -180,22 +182,24 @@ __global__ void backward_kernel_dcn(
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K,
           bool softmax>
 __global__ void backward_kernel_dcn_warp_primitive(
-    const scalar_t *p_value, const scalar_t *p_offset,
-    const scalar_t *grad_output, const int G, const int D, const int Q,
-    const int kernel_h, const int kernel_w, const int stride_h,
+    const scalar_t *__restrict__ p_value, const scalar_t *__restrict__ p_offset,
+    const scalar_t *__restrict__ grad_output, const int G, const int D,
+    const int Q, const int kernel_h, const int kernel_w, const int stride_h,
     const int stride_w, const int pad_h, const int pad_w, const int dilation_h,
     const int dilation_w, const int height_in, const int width_in,
     const int height_out, const int width_out, const opmath_t offset_scale,
-    const int remove_center, const int block_multiplier, opmath_t *grad_im,
-    opmath_t *grad_offset, const int padded_offset_dim) {
+    const int remove_center, const int block_multiplier,
+    opmath_t *__restrict__ grad_im, opmath_t *__restrict__ grad_offset,
+    const int padded_offset_dim) {
 
   extern __shared__ char _s[];
 
-  const int &qi = (blockIdx.x * block_multiplier % Q) + threadIdx.z;
-  const int &bi = blockIdx.x * block_multiplier / Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   // find the position of current group in the current warp
   const int group_per_warp = kWarpSize / blockDim.x;
@@ -218,7 +222,9 @@ __global__ void backward_kernel_dcn_warp_primitive(
 
   const scalar_t *top_grad = grad_output + ((bi * Q + qi) * G + gi) * D + di_s;
 
-  __syncthreads();
+  // Use __syncwarp for intra-group synchronization (warp_primitive only runs
+  // when group fits in warp)
+  __syncwarp(lane_mask);
   for (int i = 0; i < num_iter; i++) {
     *(p_mask_shm + num_thread * i + threadIdx.x) =
         *(scalar_t *)(p_offset_ptr + K * 2 + num_thread * i + threadIdx.x);
@@ -229,7 +235,7 @@ __global__ void backward_kernel_dcn_warp_primitive(
   }
 
   if (softmax) {
-    __syncthreads();
+    __syncwarp(lane_mask);
     // transfer offset from global memory to shared memory >
 
     // Calculate softmax over L and K
@@ -238,28 +244,28 @@ __global__ void backward_kernel_dcn_warp_primitive(
       opmath_t softmax_sum = 0.0;
 
       // get max
+#pragma unroll
       for (int j = 0; j < K; j++) {
         softmax_max = max(softmax_max, p_mask_shm[j]);
       }
 
       // get sumexp
+#pragma unroll
       for (int j = 0; j < K; j++) {
-        opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+        opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
         p_mask_shm[j] = exp_results;
         softmax_sum += exp_results;
       }
 
       // normalize
+#pragma unroll
       for (int j = 0; j < K; j++) {
         p_mask_shm[j] /= softmax_sum;
       }
     }
 
-    __syncthreads();
+    __syncwarp(lane_mask);
   }
-
-  int offset_idx = 0;
-  int mask_idx = 0;
 
   const int w_stride = G * D;
   const int base_ptr = gi * D + di_s;
@@ -275,56 +281,51 @@ __global__ void backward_kernel_dcn_warp_primitive(
       p0_w - ((dilation_w * (kernel_w - 1)) >> 1) * offset_scale;
   const opmath_t p0_h_ =
       p0_h - ((dilation_h * (kernel_h - 1)) >> 1) * offset_scale;
-  const int center_h = kernel_h / 2;
-  const int center_w = kernel_w / 2;
 
-  grad_offset += (bi * Q + qi) * padded_offset_dim + gi * K * 3;
-  opmath_t *grad_offset_softmax = grad_offset + K * 2;
+  opmath_t *grad_offset_base =
+      grad_offset + (bi * Q + qi) * padded_offset_dim + gi * K * 3;
+  opmath_t *grad_offset_softmax = grad_offset_base + K * 2;
 
+  // Fully unrolled loop using compile-time offset table
   opmath_t reg_grad_offset[3] = {0.};
-  for (int i = 0; i < kernel_w; ++i) {
-    for (int j = 0; j < kernel_h; ++j) {
-      if (i != center_w || j != center_h || !remove_center) {
-        const opmath_t w_im =
-            p0_w_ + (i * dilation_w + (opmath_t)p_offset_ptr[offset_idx]) *
-                        offset_scale;
-        const opmath_t h_im =
-            p0_h_ + (j * dilation_h + (opmath_t)p_offset_ptr[offset_idx + 1]) *
-                        offset_scale;
-        const opmath_t attn = p_mask_shm[mask_idx];
-        reg_grad_offset[0] = 0;
-        reg_grad_offset[1] = 0;
-        reg_grad_offset[2] = 0;
+#pragma unroll
+  for (int k = 0; k < K; ++k) {
+    const int i = KernelOffsets<K>::dx(k);
+    const int j = KernelOffsets<K>::dy(k);
+    const opmath_t w_im =
+        p0_w_ + (i * dilation_w + (opmath_t)p_offset_ptr[k * 2]) * offset_scale;
+    const opmath_t h_im =
+        p0_h_ +
+        (j * dilation_h + (opmath_t)p_offset_ptr[k * 2 + 1]) * offset_scale;
+    const opmath_t attn = p_mask_shm[k];
+    reg_grad_offset[0] = 0;
+    reg_grad_offset[1] = 0;
+    reg_grad_offset[2] = 0;
 
-        if (h_im > -1 && w_im > -1 && h_im < height_in && w_im < width_in) {
-          ms_deform_attn_col2im_bilinear<scalar_t, transfer_t, d_stride>(
-              p_value_ptr, height_in, width_in, h_im, w_im, attn, w_stride,
-              base_ptr, offset_scale, offset_scale, top_grad, grad_im_ptr,
-              reg_grad_offset);
-        }
+    if (h_im > -1 && w_im > -1 && h_im < height_in && w_im < width_in) {
+      ms_deform_attn_col2im_bilinear<scalar_t, transfer_t, d_stride>(
+          p_value_ptr, height_in, width_in, h_im, w_im, attn, w_stride,
+          base_ptr, offset_scale, offset_scale, top_grad, grad_im_ptr,
+          reg_grad_offset);
+    }
 
-        // aggregated across different channel for offset
-        for (uint32_t offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
-          reg_grad_offset[0] +=
-              __shfl_down_sync(lane_mask, reg_grad_offset[0], offset);
-          reg_grad_offset[1] +=
-              __shfl_down_sync(lane_mask, reg_grad_offset[1], offset);
-          reg_grad_offset[2] +=
-              __shfl_down_sync(lane_mask, reg_grad_offset[2], offset);
-        }
+    // aggregated across different channel for offset
+    for (uint32_t offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+      reg_grad_offset[0] +=
+          __shfl_down_sync(lane_mask, reg_grad_offset[0], offset);
+      reg_grad_offset[1] +=
+          __shfl_down_sync(lane_mask, reg_grad_offset[1], offset);
+      reg_grad_offset[2] +=
+          __shfl_down_sync(lane_mask, reg_grad_offset[2], offset);
+    }
 
-        if (threadIdx.x == 0) {                    //
-          *(grad_offset) = reg_grad_offset[0];     // B x H x W x G x L x K x 3
-          *(grad_offset + 1) = reg_grad_offset[1]; // B x H x W x G x L x K x 3
-          if (softmax) {
-            cache_g_mask_before_softmax[mask_idx] = reg_grad_offset[2] * attn;
-          } else {
-            grad_offset_softmax[mask_idx] = reg_grad_offset[2];
-          }
-        }
-        offset_idx += 2;
-        mask_idx += 1;
-        grad_offset += 2;
+    if (threadIdx.x == 0) {
+      *(grad_offset_base + k * 2) = reg_grad_offset[0];
+      *(grad_offset_base + k * 2 + 1) = reg_grad_offset[1];
+      if (softmax) {
+        cache_g_mask_before_softmax[k] = reg_grad_offset[2] * attn;
+      } else {
+        grad_offset_softmax[k] = reg_grad_offset[2];
       }
     }
   }
@@ -375,7 +376,7 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
   if (softmax) {
     switch (K) {
     case 9:
-      if (check_backward_warpp(d_stride, D)) {
+      if (check_backward_warp(d_stride, D)) {
         kernel = backward_kernel_dcn_warp_primitive<scalar_t, d_stride,
                                                     stride_type, 1, 9, true>;
       } else {
@@ -384,7 +385,7 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
       }
       break;
     case 8:
-      if (check_backward_warpp(d_stride, D)) {
+      if (check_backward_warp(d_stride, D)) {
         kernel = backward_kernel_dcn_warp_primitive<scalar_t, d_stride,
                                                     stride_type, 1, 8, true>;
       } else {
@@ -398,7 +399,7 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
   } else {
     switch (K) {
     case 9:
-      if (check_backward_warpp(d_stride, D)) {
+      if (check_backward_warp(d_stride, D)) {
         kernel = backward_kernel_dcn_warp_primitive<scalar_t, d_stride,
                                                     stride_type, 1, 9, false>;
       } else {
@@ -407,7 +408,7 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
       }
       break;
     case 8:
-      if (check_backward_warpp(d_stride, D)) {
+      if (check_backward_warp(d_stride, D)) {
         kernel = backward_kernel_dcn_warp_primitive<scalar_t, d_stride,
                                                     stride_type, 1, 8, false>;
       } else {
@@ -421,17 +422,18 @@ void _dcnv4_col2im_cuda(cudaStream_t stream,
   }
 
   const int block_multiplier = block_thread / (D / d_stride) / G;
-  TORCH_CHECK((B * Q) % block_multiplier == 0,
-              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
-              Q, ") % ", block_multiplier, " != 0");
+  TORCH_CHECK(Q % block_multiplier == 0,
+              "Q must be divisible by block_multiplier: ", Q, " % ",
+              block_multiplier, " != 0");
 
-  dim3 num_blocks(B * Q / block_multiplier);
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  dim3 num_blocks(Q / block_multiplier, B);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   const int blockdimX = D / d_stride;
 
   int shm_size = sizeof(opmath_t) * (G * block_multiplier * K) * 2;
-  if (!check_backward_warpp(d_stride, D)) {
+  if (!check_backward_warp(d_stride, D)) {
     shm_size = sizeof(opmath_t) * ((G * block_multiplier * K) * 2 +
                                    G * block_multiplier * blockdimX * 3);
   }

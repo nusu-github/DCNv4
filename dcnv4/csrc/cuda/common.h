@@ -31,16 +31,47 @@ inline int GET_BLOCKS(const int N, const int num_threads) {
   for (int(i) = blockIdx.x * blockDim.x + threadIdx.x; (i) < (n);              \
        (i) += blockDim.x * gridDim.x)
 
-inline bool check_backward_warpp(int d_stride, int D) {
+inline bool check_backward_warp(int d_stride, int D) {
   int n_group_threads = D / d_stride;
   return (n_group_threads <= kWarpSize) && (kWarpSize % n_group_threads == 0);
 }
 
+// Compile-time kernel offset tables for loop unrolling
+// For 3x3 kernel (K=9): all positions
+// For 3x3 kernel with center removed (K=8): all positions except center
+template <int K> struct KernelOffsets;
+
+template <> struct KernelOffsets<9> {
+  // 3x3 kernel: (i, j) order matches for (i < kernel_w) for (j < kernel_h)
+  // i=0: j=0,1,2; i=1: j=0,1,2; i=2: j=0,1,2
+  __host__ __device__ static constexpr int dx(int k) {
+    constexpr int table[] = {0, 0, 0, 1, 1, 1, 2, 2, 2};
+    return table[k];
+  }
+  __host__ __device__ static constexpr int dy(int k) {
+    constexpr int table[] = {0, 1, 2, 0, 1, 2, 0, 1, 2};
+    return table[k];
+  }
+};
+
+template <> struct KernelOffsets<8> {
+  // 3x3 kernel with center (1,1) removed
+  // i=0: j=0,1,2; i=1: j=0,2; i=2: j=0,1,2 (skip i=1,j=1)
+  __host__ __device__ static constexpr int dx(int k) {
+    constexpr int table[] = {0, 0, 0, 1, 1, 2, 2, 2};
+    return table[k];
+  }
+  __host__ __device__ static constexpr int dy(int k) {
+    constexpr int table[] = {0, 1, 2, 0, 2, 0, 1, 2};
+    return table[k];
+  }
+};
+
 template <typename scalar_t, typename transfer_t, int c_per_thread>
 __device__ void ms_deform_attn_im2col_bilinear(
-    opmath_t out_reg_array[], const scalar_t *&p_value, const int &height,
-    const int &width, const opmath_t &h_px, const opmath_t &w_px,
-    const opmath_t &attn, const int &w_stride, const int &base_ptr) {
+    opmath_t out_reg_array[], const scalar_t *__restrict__ p_value,
+    const int height, const int width, const opmath_t h_px, const opmath_t w_px,
+    const opmath_t attn, const int w_stride, const int base_ptr) {
 
   const int h_low = floor(h_px);
   const int w_low = floor(w_px);
@@ -97,11 +128,11 @@ __device__ void ms_deform_attn_im2col_bilinear(
 
 template <typename scalar_t, typename transfer_t, int c_per_thread>
 __device__ void ms_deform_attn_col2im_bilinear(
-    const scalar_t *&p_value, const int &height, const int &width,
-    const opmath_t &h_px, const opmath_t &w_px, const opmath_t &attn,
-    const int &w_stride, const int &base_ptr, const opmath_t offset_scale_h,
-    const opmath_t offset_scale_w, const scalar_t *&top_grad,
-    opmath_t *&grad_im, opmath_t *grad_offset) {
+    const scalar_t *__restrict__ p_value, const int height, const int width,
+    const opmath_t h_px, const opmath_t w_px, const opmath_t attn,
+    const int w_stride, const int base_ptr, const opmath_t offset_scale_h,
+    const opmath_t offset_scale_w, const scalar_t *__restrict__ top_grad,
+    opmath_t *__restrict__ grad_im, opmath_t *__restrict__ grad_offset) {
 
   const int h_low = floor(h_px);
   const int w_low = floor(w_px);

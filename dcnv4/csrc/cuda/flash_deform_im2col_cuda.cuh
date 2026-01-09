@@ -14,19 +14,21 @@
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
 __global__ void
-forward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
-               const int64_t *data_level_start_index, const scalar_t *p_offset,
-               scalar_t *p_output, const int N, const int G, const int D,
-               const int Q, const int block_multiplier) {
+forward_kernel(const scalar_t *__restrict__ p_value,
+               const int64_t *__restrict__ data_spatial_shapes,
+               const int64_t *__restrict__ data_level_start_index,
+               const scalar_t *__restrict__ p_offset,
+               scalar_t *__restrict__ p_output, const int N, const int G,
+               const int D, const int Q, const int block_multiplier) {
 
   extern __shared__ char _s[];
 
-  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
-  const int bi = global_idx / Q;
-  const int qi = global_idx % Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   opmath_t p_out_shm[d_stride] = {0.};
   opmath_t *const p_mask_shm =
@@ -61,7 +63,7 @@ forward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 
     // get sumexp
     for (int j = 0; j < L * K; j++) {
-      opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+      opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
       p_mask_shm[j] = exp_results;
       softmax_sum += exp_results;
     }
@@ -103,29 +105,31 @@ forward_kernel(const scalar_t *p_value, const int64_t *data_spatial_shapes,
 
   int out_idx = ((bi * Q + qi) * G + gi) * D + di_s;
 
-  scalar_t *fp16_regs = (scalar_t *)(p_out_shm);
+  // Convert opmath_t to scalar_t explicitly (avoiding type punning UB)
+  scalar_t out_s[d_stride];
 #pragma unroll
   for (int ds = 0; ds < d_stride; ds++) {
-    fp16_regs[ds] = p_out_shm[ds];
+    out_s[ds] = static_cast<scalar_t>(p_out_shm[ds]);
   }
 
-  *(transfer_t *)(p_output + out_idx) = *(transfer_t *)(p_out_shm);
+  *(transfer_t *)(p_output + out_idx) = *(transfer_t *)(out_s);
 }
 
 template <typename scalar_t, int d_stride, typename transfer_t, int L, int K>
-__global__ void forward_kernel_reg(const scalar_t *p_value,
-                                   const int64_t *data_spatial_shapes,
-                                   const int64_t *data_level_start_index,
-                                   const scalar_t *p_offset, scalar_t *p_output,
-                                   const int N, const int G, const int D,
-                                   const int Q, const int block_multiplier) {
+__global__ void
+forward_kernel_reg(const scalar_t *__restrict__ p_value,
+                   const int64_t *__restrict__ data_spatial_shapes,
+                   const int64_t *__restrict__ data_level_start_index,
+                   const scalar_t *__restrict__ p_offset,
+                   scalar_t *__restrict__ p_output, const int N, const int G,
+                   const int D, const int Q, const int block_multiplier) {
 
-  const int global_idx = blockIdx.x * block_multiplier + threadIdx.z;
-  const int bi = global_idx / Q;
-  const int qi = global_idx % Q;
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  const int qi = blockIdx.x * block_multiplier + threadIdx.z;
+  const int bi = blockIdx.y;
 
-  const int &di_s = threadIdx.x * d_stride;
-  const int &gi = threadIdx.y;
+  const int di_s = threadIdx.x * d_stride;
+  const int gi = threadIdx.y;
 
   opmath_t p_out_shm[d_stride] = {0.};
   opmath_t p_mask_shm[L * K] = {0.};
@@ -148,7 +152,7 @@ __global__ void forward_kernel_reg(const scalar_t *p_value,
 
   // get sumexp
   for (int j = 0; j < L * K; j++) {
-    opmath_t exp_results = exp(p_mask_shm[j] - softmax_max);
+    opmath_t exp_results = expf(p_mask_shm[j] - softmax_max);
     p_mask_shm[j] = exp_results;
     softmax_sum += exp_results;
   }
@@ -187,13 +191,14 @@ __global__ void forward_kernel_reg(const scalar_t *p_value,
 
   int out_idx = ((bi * Q + qi) * G + gi) * D + di_s;
 
-  scalar_t *fp16_regs = (scalar_t *)(p_out_shm);
+  // Convert opmath_t to scalar_t explicitly (avoiding type punning UB)
+  scalar_t out_s[d_stride];
 #pragma unroll
   for (int ds = 0; ds < d_stride; ds++) {
-    fp16_regs[ds] = p_out_shm[ds];
+    out_s[ds] = static_cast<scalar_t>(p_out_shm[ds]);
   }
 
-  *(transfer_t *)(p_output + out_idx) = *(transfer_t *)(p_out_shm);
+  *(transfer_t *)(p_output + out_idx) = *(transfer_t *)(out_s);
 }
 
 template <typename scalar_t, typename stride_type, int K, int d_stride>
@@ -216,10 +221,11 @@ void _flash_deformable_im2col_cuda(cudaStream_t stream,
               block_multiplier, " (block_thread=", block_thread, ", D=", D,
               ", d_stride=", d_stride, ", G=", G,
               "). Try increasing block_thread or d_stride.");
-  TORCH_CHECK((B * Q) % block_multiplier == 0,
-              "(B * Q) must be divisible by block_multiplier: ", "(", B, " * ",
-              Q, ") % ", block_multiplier, " != 0");
-  dim3 num_blocks(B * Q / block_multiplier);
+  TORCH_CHECK(Q % block_multiplier == 0,
+              "Q must be divisible by block_multiplier: ", Q, " % ",
+              block_multiplier, " != 0");
+  // 2D grid: blockIdx.x for Q dimension, blockIdx.y for B dimension
+  dim3 num_blocks(Q / block_multiplier, B);
   dim3 num_threads(D / d_stride, G, block_multiplier);
 
   const int shm_size = 0;
