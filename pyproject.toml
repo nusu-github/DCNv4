@@ -20,4 +20,4 @@ build-dir = "build/{wheel_tag}"
 strict-config = true
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["hypothesis-torch", "modal", "pytest"]

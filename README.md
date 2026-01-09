@@ -42,6 +42,26 @@ export DCNV4_USE_TRITON=1
 
 The Triton backend offers better portability across GPU architectures without recompilation.
 
+## Tolerance Measurement (CUDA vs PyTorch Reference)
+
+This repo includes a one-off script to empirically measure numerical error between the CUDA
+implementation and the PyTorch reference implementation:
+
+- Local (requires CUDA-capable GPU + CUDA toolkit + DCNv4 built):
+
+```bash
+pip install -v -e .
+python scripts/measure_tolerance.py --seeds 200 --output tolerance_measurements.json
+```
+
+- Modal (runs on a cloud GPU and writes results to your local `--output`):
+
+```bash
+pip install modal
+modal setup
+modal run scripts/modal_measure_tolerance.py --seeds 200 --output tolerance_measurements.json
+```
+
 ## API Reference
 
 ### `dcnv4`

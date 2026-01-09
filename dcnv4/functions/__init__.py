@@ -30,6 +30,7 @@ Backend Selection:
 """
 
 from .dcnv4_func import dcnv4_forward
+from .dcnv4_pytorch import dcnv4_forward_pytorch
 from .flash_deform_attn_func import flash_deform_attn
 
-__all__ = ["dcnv4_forward", "flash_deform_attn"]
+__all__ = ["dcnv4_forward", "dcnv4_forward_pytorch", "flash_deform_attn"]

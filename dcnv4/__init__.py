@@ -36,7 +36,13 @@ References:
 
 """
 
-from .functions import dcnv4_forward, flash_deform_attn
+from .functions import dcnv4_forward, dcnv4_forward_pytorch, flash_deform_attn
 from .modules import FlashDeformAttn, dcnv4
 
-__all__ = ["FlashDeformAttn", "dcnv4", "dcnv4_forward", "flash_deform_attn"]
+__all__ = [
+    "FlashDeformAttn",
+    "dcnv4",
+    "dcnv4_forward",
+    "dcnv4_forward_pytorch",
+    "flash_deform_attn",
+]
