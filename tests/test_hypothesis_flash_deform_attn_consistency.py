@@ -618,11 +618,22 @@ def _batch_shapes() -> list[tuple[int, int, int, int, int, int, int]]:
     return [s for s in VALID_SHAPES if s[0] > 1]
 
 
-BATCH_SHAPES = (
-    _batch_shapes()
-    if any(s[0] > 1 for s in VALID_SHAPES)
-    else [(2, 2, 4, 4, 16, 10, 0)]
-)
+def _fallback_batch_shapes() -> list[tuple[int, int, int, int, int, int, int]]:
+    """Create a valid batch shape when VALID_SHAPES contains only B=1.
+
+    We reuse an existing VALID_SHAPES entry (which already satisfies the CUDA
+    kernel constraints) and only bump B to 2.
+    """
+    if len(VALID_SHAPES) == 0:
+        # Extremely defensive fallback: must satisfy the CUDA constraint
+        # "Q divisible by block_multiplier" (common case: 20).
+        return [(2, 2, 4, 4, 16, 20, 0)]
+
+    b, l, k, g, d, q, spatial_idx = VALID_SHAPES[0]
+    return [(2, l, k, g, d, q, spatial_idx)]
+
+
+BATCH_SHAPES = _batch_shapes() or _fallback_batch_shapes()
 
 
 @settings(max_examples=3, deadline=None)

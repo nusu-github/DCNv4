@@ -18,11 +18,21 @@ def factors(n: int) -> list[int]:
         List of all factors of n in ascending order.
 
     """
-    result = []
-    for i in range(1, n + 1):
+    if n <= 0:
+        return []
+
+    small: list[int] = []
+    large: list[int] = []
+    limit = int(math.isqrt(n))
+    for i in range(1, limit + 1):
         if n % i == 0:
-            result.append(i)
-    return result
+            small.append(i)
+            other = n // i
+            if other != i:
+                large.append(other)
+
+    # small is ascending; large is descending, so reverse it.
+    return small + large[::-1]
 
 
 def compute_offset_mask_channels(

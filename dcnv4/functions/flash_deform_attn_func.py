@@ -18,7 +18,10 @@ from .utils import factors
 def findspec(B, Q, G, C):
     """Find optimal kernel configuration for forward pass."""
     d_stride = 8
-    ms = factors(B * Q)
+    # CUDA kernel requires: Q % block_multiplier == 0.
+    # Here block_multiplier equals `multiplier` (see how blockthread is derived),
+    # so we must only pick divisors of Q (not B*Q).
+    ms = factors(Q)
     multiplier = 1
     for m in ms:
         if m <= 64 and (m * G * C // d_stride) <= 512:
@@ -30,7 +33,9 @@ def findspec(B, Q, G, C):
 def find_spec_bwd(B, Q, G, C):
     """Find optimal kernel configuration for backward pass."""
     d_stride = 2 if C >= 64 else 1
-    ms = factors(B * Q)
+    # Backward CUDA kernel has the same constraint: Q must be divisible by
+    # block_multiplier.
+    ms = factors(Q)
     multiplier = 1
     for m in ms:
         if m <= 64 and (m * G * C // d_stride) <= 256:
