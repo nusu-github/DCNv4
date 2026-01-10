@@ -9,15 +9,12 @@ authors = [{ name = "Yuwen Xiong" }, { name = "Feng Wang" }]
 dependencies = ["torch>=2.0.0", "torchvision"]
 
 [build-system]
-requires = ["scikit-build-core>=0.11", "torch>=2.0.0", "numpy"]
-build-backend = "scikit_build_core.build"
+requires = ["setuptools>=68", "wheel", "torch>=2.0.0", "numpy"]
+build-backend = "setuptools.build_meta"
 
-[tool.scikit-build]
-cmake.build-type = "Release"
-wheel.packages = ["dcnv4"]
-minimum-version = "0.11"
-build-dir = "build/{wheel_tag}"
-strict-config = true
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dcnv4*"]
 
 [dependency-groups]
 dev = ["hypothesis-torch", "modal", "pytest"]
