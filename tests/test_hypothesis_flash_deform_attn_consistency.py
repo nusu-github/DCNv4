@@ -629,7 +629,7 @@ def _fallback_batch_shapes() -> list[tuple[int, int, int, int, int, int, int]]:
         # "Q divisible by block_multiplier" (common case: 20).
         return [(2, 2, 4, 4, 16, 20, 0)]
 
-    b, l, k, g, d, q, spatial_idx = VALID_SHAPES[0]
+    _b, l, k, g, d, q, spatial_idx = VALID_SHAPES[0]
     return [(2, l, k, g, d, q, spatial_idx)]
 
 

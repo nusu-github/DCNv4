@@ -23,7 +23,7 @@ def factors(n: int) -> list[int]:
 
     small: list[int] = []
     large: list[int] = []
-    limit = int(math.isqrt(n))
+    limit = math.isqrt(n)
     for i in range(1, limit + 1):
         if n % i == 0:
             small.append(i)

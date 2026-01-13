@@ -32,11 +32,19 @@ Kernel Configuration:
         - n_thread: Total number of threads per CUDA block
 """
 
+import os
+
 import torch
 import torch.library
 
 from dcnv4 import ops
 
+from .dcnv4_triton import (
+    dcnv4_backward_triton,
+    dcnv4_forward_triton,
+    is_triton_available,
+    triton_supports,
+)
 from .table import BWDTABLE, TABLE
 from .utils import factors
 
@@ -74,6 +82,26 @@ def find_spec_bwd(B, H, W, G, C):
     return d_stride, n_thread
 
 
+def _env_flag_set(name: str) -> bool:
+    value = os.getenv(name, "")
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _use_triton(
+    input: torch.Tensor,
+    kernel_h: int,
+    kernel_w: int,
+    remove_center: int,
+) -> bool:
+    if not _env_flag_set("DCNV4_USE_TRITON"):
+        return False
+    if not input.is_cuda:
+        return False
+    if not is_triton_available():
+        return False
+    return triton_supports(kernel_h, kernel_w, remove_center)
+
+
 @torch.library.custom_op("dcnv4::dcnv4_forward", mutates_args=())
 def dcnv4_forward(
     input: torch.Tensor,
@@ -94,6 +122,26 @@ def dcnv4_forward(
     softmax: bool = False,
 ) -> torch.Tensor:
     """Forward pass of DCNv4."""
+    if _use_triton(input, kernel_h, kernel_w, remove_center):
+        return dcnv4_forward_triton(
+            input,
+            offset_mask,
+            kernel_h,
+            kernel_w,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            dilation_h,
+            dilation_w,
+            group,
+            group_channels,
+            offset_scale,
+            im2col_step,
+            remove_center,
+            softmax,
+        )
+
     forward_d_stride, forward_block_thread = findspec(
         input.shape[0],
         input.shape[1],
@@ -166,35 +214,56 @@ def dcnv4_backward(ctx, grad_output):
     remove_center = ctx.remove_center
     softmax = ctx.softmax
 
-    backward_d_stride, backward_block_thread = find_spec_bwd(
-        input.shape[0],
-        input.shape[1],
-        input.shape[2],
-        group,
-        group_channels,
-    )
+    if _use_triton(input, kernel_h, kernel_w, remove_center):
+        grad_input, grad_offset_mask = dcnv4_backward_triton(
+            input,
+            offset_mask,
+            kernel_h,
+            kernel_w,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            dilation_h,
+            dilation_w,
+            group,
+            group_channels,
+            offset_scale,
+            im2col_step,
+            grad_output.contiguous(),
+            remove_center,
+            softmax,
+        )
+    else:
+        backward_d_stride, backward_block_thread = find_spec_bwd(
+            input.shape[0],
+            input.shape[1],
+            input.shape[2],
+            group,
+            group_channels,
+        )
 
-    grad_input, grad_offset_mask = ops.dcnv4_backward(
-        input,
-        offset_mask,
-        kernel_h,
-        kernel_w,
-        stride_h,
-        stride_w,
-        pad_h,
-        pad_w,
-        dilation_h,
-        dilation_w,
-        group,
-        group_channels,
-        offset_scale,
-        im2col_step,
-        grad_output.contiguous(),
-        remove_center,
-        backward_d_stride,
-        backward_block_thread,
-        softmax,
-    )
+        grad_input, grad_offset_mask = ops.dcnv4_backward(
+            input,
+            offset_mask,
+            kernel_h,
+            kernel_w,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            dilation_h,
+            dilation_w,
+            group,
+            group_channels,
+            offset_scale,
+            im2col_step,
+            grad_output.contiguous(),
+            remove_center,
+            backward_d_stride,
+            backward_block_thread,
+            softmax,
+        )
 
     return (
         grad_input,
